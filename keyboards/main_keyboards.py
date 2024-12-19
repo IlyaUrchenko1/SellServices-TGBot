@@ -2,25 +2,11 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
 
-def start_keyboard_if_not_seller() -> ReplyKeyboardMarkup:
+def default_start_keyboard() -> ReplyKeyboardMarkup:
     keyboard = ReplyKeyboardBuilder()
-
-    keyboard.add(KeyboardButton(text='👁️ Смотреть объявления')) 
-    keyboard.add(KeyboardButton(text="💲 Стать продавцом"))
-    keyboard.row(KeyboardButton(text='👨‍🦰 Поддержка'))
-
-    return keyboard.as_markup(resize_keyboard=True)
-
-
-def start_keyboard_if_seller() -> ReplyKeyboardMarkup:
-    keyboard = ReplyKeyboardBuilder()
-
-    keyboard.add(KeyboardButton(text='👁️ Смотреть объявления')) 
-    keyboard.add(KeyboardButton(text='📈 Выставить свою услугу')) 
-    keyboard.row(KeyboardButton(text='👨‍🦰 Поддержка')) 
-
-    return keyboard.as_markup(resize_keyboard=True)
-
+    keyboard.add(KeyboardButton(text='👁️ Смотреть объявления'))
+    keyboard.add(KeyboardButton(text='👨‍🦰 Поддержка'))
+    return keyboard #Это дефолтная клавиатура, она дополняется кнопками из вне
 
 def admin_keyboard() -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardBuilder()

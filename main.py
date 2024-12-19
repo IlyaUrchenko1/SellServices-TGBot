@@ -7,8 +7,10 @@ from dotenv import load_dotenv
 
 from middlewares.antiflood import AntiFloodMiddleware
 from middlewares.check_ban import BanCheckMiddleware
-from handlers import main_handler
 from middlewares.private_chat import PrivateChatMiddleware
+
+from handlers import main_handler
+from handlers.main_function import support_handler
 
 load_dotenv()
 
@@ -25,6 +27,7 @@ async def main():
 
     # Включение роутеров
     dp.include_routers(main_handler.router)
+    dp.include_routers(support_handler.router)
     
     try:
         await bot.delete_webhook(drop_pending_updates=True)
