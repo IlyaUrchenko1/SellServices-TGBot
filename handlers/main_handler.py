@@ -4,8 +4,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import KeyboardButton
 
-from keyboards.main_keyboards import default_start_keyboard
+from keyboards.main_keyboards import default_start_keyboard, admin_keyboard
 from utils.database import Database
+from utils.variables import ADMIN_IDS
 
 router = Router()
 db = Database()
@@ -26,7 +27,7 @@ async def start_command(message: Message):
 
     keyboard = default_start_keyboard()
 
-    if db.is_seller(telegram_id=telegram_id):
+    if 1 == 1: #db.is_seller(telegram_id=telegram_id)
         keyboard.add(KeyboardButton(text='📈 Выставить свою услугу'))
         
         services = db.get_services_by_user(user_id=user[0])
@@ -42,6 +43,10 @@ async def start_command(message: Message):
         reply_markup=reply_markup
     )
 
+    if message.from_user.id in ADMIN_IDS:
+        keyboard = admin_keyboard()
+        await message.reply("По скольку вы админ, вы можете использовать функционал ниже", reply_markup=keyboard)
+
 # Обработчик кнопки "Вернуться домой 🏠"
 @router.callback_query(F.data == "go_to_home")
 async def go_to_home(callback: CallbackQuery, state: FSMContext):
@@ -56,7 +61,7 @@ async def go_to_home(callback: CallbackQuery, state: FSMContext):
     if db.is_seller(telegram_id=telegram_id):
         keyboard.add(KeyboardButton(text='📈 Выставить свою услугу'))
         
-        services = db.get_services_by_user(user_id=user[0])
+        services = db.get_active_service_types(user_id=user[0])
         if services:
             keyboard.add(KeyboardButton(text='Все мои услуги 📋'))
     else:

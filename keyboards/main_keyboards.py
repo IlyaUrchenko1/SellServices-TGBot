@@ -13,6 +13,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 
     keyboard.row(InlineKeyboardButton(text='Рассылка', callback_data='start_broadcast'))
     keyboard.row(InlineKeyboardButton(text='Просмотр жалоб', callback_data='get_all_reports'))
+    keyboard.row(InlineKeyboardButton(text='Создать новый тип услуги', callback_data='create_service_type'))
 
     return keyboard.as_markup()
 
