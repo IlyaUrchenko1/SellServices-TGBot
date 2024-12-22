@@ -11,7 +11,7 @@ from middlewares.private_chat import PrivateChatMiddleware
 
 from handlers import main_handler
 from handlers.main_function import support_handler, post_handler
-from handlers.admin_function import create_new_type
+from handlers.admin_function import create_new_type, get_complaints, start_newsletter
 load_dotenv()
 
 # Настройки бота по умолчанию
@@ -28,8 +28,11 @@ async def main():
     # Включение роутеров
     dp.include_routers(main_handler.router)
     dp.include_routers(support_handler.router, post_handler.router)
-    dp.include_routers(create_new_type.router)
-    
+
+    dp.include_routers(create_new_type.router, 
+                       get_complaints.router, 
+                       start_newsletter.router)
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, skip_updates=True)

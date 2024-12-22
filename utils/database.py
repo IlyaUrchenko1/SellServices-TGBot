@@ -17,7 +17,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id TEXT UNIQUE,
-                full_name TEXT,
+                username TEXT,
                 number_phone TEXT,
                 is_seller BOOLEAN DEFAULT 0
             )
@@ -63,11 +63,10 @@ class Database:
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS complaints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                complainant_telegram_id TEXT,
-                accused_telegram_id TEXT,
+                complainant_telegram_username TEXT,
+                accused_telegram_username TEXT,
                 date TEXT,
-                text TEXT,
-                status TEXT DEFAULT 'pending'
+                text TEXT
             )
         """)
 
@@ -85,12 +84,12 @@ class Database:
 
     #region Методы для таблицы users
 
-    def add_user(self, telegram_id: str, full_name: Optional[str] = None, number_phone: Optional[str] = None, is_seller: bool = False) -> None:
+    def add_user(self, telegram_id: str, username: str, number_phone: Optional[str] = None, is_seller: bool = False) -> None:
         try:
             self.cursor.execute("""
-                INSERT INTO users (telegram_id, full_name, number_phone, is_seller)
+                INSERT INTO users (telegram_id, username, number_phone, is_seller)
                 VALUES (?, ?, ?, ?)
-            """, (telegram_id, full_name, number_phone, int(is_seller)))
+            """, (telegram_id, username, number_phone, int(is_seller)))
             self.connection.commit()
         except sqlite3.IntegrityError:
             print("Пользователь с таким telegram_id уже существует.")
@@ -113,11 +112,13 @@ class Database:
             self.cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
             self.connection.commit()
 
-    def get_user(self, user_id: Optional[int] = None, telegram_id: Optional[str] = None) -> Optional[Tuple]:
+    def get_user(self, user_id: Optional[int] = None, telegram_id: Optional[str] = None, username: Optional[str] = None) -> Optional[Tuple]:
         if user_id is not None:
             self.cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
         elif telegram_id is not None:
             self.cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+        elif username is not None:
+            self.cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
         else:
             return None
         return self.cursor.fetchone()
@@ -418,32 +419,22 @@ class Database:
 
     #region Методы для таблицы complaints
 
-    def add_complaint(self, complainant_telegram_id: str, accused_telegram_id: str, 
+    def add_complaint(self, complainant_telegram_username: str, accused_telegram_username: str, 
                      date: str, text: str) -> None:
         self.cursor.execute("""
-            INSERT INTO complaints (complainant_telegram_id, accused_telegram_id, date, text)
+            INSERT INTO complaints (complainant_telegram_username, accused_telegram_username, date, text)
             VALUES (?, ?, ?, ?)
-        """, (complainant_telegram_id, accused_telegram_id, date, text))
+        """, (complainant_telegram_username, accused_telegram_username, date, text))
         self.connection.commit()
 
-    def get_complaint(self, complaint_id: int) -> Optional[Tuple]:
-        self.cursor.execute("SELECT * FROM complaints WHERE id = ?", (complaint_id,))
-        return self.cursor.fetchone()
 
-    def get_complaints(self, status: Optional[str] = None) -> List[Tuple]:
-        if status:
-            self.cursor.execute("SELECT * FROM complaints WHERE status = ?", (status,))
-        else:
-            self.cursor.execute("SELECT * FROM complaints")
+    def get_complaints(self) -> List[Tuple]:
+        self.cursor.execute("SELECT * FROM complaints")
         return self.cursor.fetchall()
 
-    def update_complaint_status(self, complaint_id: int, status: str) -> None:
-        self.cursor.execute("UPDATE complaints SET status = ? WHERE id = ?", 
-                          (status, complaint_id))
-        self.connection.commit()
 
-    def delete_complaint(self, complaint_id: int) -> None:
-        self.cursor.execute("DELETE FROM complaints WHERE id = ?", (complaint_id,))
+    def delete_complaint_by_complainant_telegram_username(self, complainant_telegram_username: int) -> None:
+        self.cursor.execute("DELETE FROM complaints WHERE complainant_telegram_username = ?", (complainant_telegram_username,))
         self.connection.commit()
 
     #endregion
