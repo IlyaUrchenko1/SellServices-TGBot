@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Union
 import json
 
 
@@ -32,10 +32,9 @@ class Database:
                 is_active BOOLEAN DEFAULT 1,
                 required_fields TEXT NOT NULL DEFAULT '{
                     "photo": {"type": "image", "label": "Фотография услуги", "required": true, "description": "Загрузите фото, отражающее вашу услугу"},
-                    "city": {"type": "text", "label": "Город", "required": true, "description": "Укажите город оказания услуги"},
-                    "district": {"type": "text", "label": "Район", "required": true, "description": "Укажите район города"},
-                    "price": {"type": "number", "label": "Стоимость", "required": true, "description": "Укажите стоимость услуги в рублях"},
-                    "title": {"type": "text", "label": "Название услуги", "required": true, "description": "Введите краткое название вашей услуги"}
+                    "adress": {"type": "adress", "label": "Адрес", "required": true, "description": "Укажите адрес оказания услуги"},
+                    "number_phone": {"type": "text", "label": "Номер телефона", "required": true, "description": "Укажите номер телефона для связи"},
+                    "price": {"type": "number", "label": "Стоимость", "required": true, "description": "Укажите стоимость услуги в рублях"}
                 }'
             )
         """)
@@ -46,9 +45,12 @@ class Database:
                 user_id INTEGER NOT NULL,
                 service_type_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
-                photo BLOB NOT NULL,
+                photo_id TEXT NOT NULL,
                 city TEXT NOT NULL,
                 district TEXT NOT NULL,
+                street TEXT NOT NULL,
+                house TEXT,
+                number_phone TEXT NOT NULL,
                 price INTEGER NOT NULL,
                 custom_fields TEXT,
                 status TEXT DEFAULT 'active',
@@ -143,7 +145,7 @@ class Database:
 
     def add_service_type(self, name: str, created_by_id: str, required_fields: Dict[str, Dict[str, Any]]) -> Optional[int]:
         """
-        Добавляет новый тип услуги с указанными полями
+        Добавляет новый тип услуги с указаниями полями
         Args:
             name: Название типа услуги
             created_by_id: Telegram ID админа, создавшего тип
@@ -155,10 +157,9 @@ class Database:
             # Добавляем стандартные поля, если их нет
             default_fields = {
                 "photo": {"type": "image", "label": "Фотография услуги", "required": True, "description": "Загрузите фото услуги"},
-                "city": {"type": "text", "label": "Город", "required": True, "description": "Укажите город оказания услуги"},
-                "district": {"type": "text", "label": "Район", "required": True, "description": "Укажите район города"},
+                "adress": {"type": "adress", "label": "Адрес", "required": True, "description": "Укажите адрес оказания услуги"},
+                "number_phone": {"type": "text", "label": "Номер телефона", "required": True, "description": "Укажите номер телефона для связи"},
                 "price": {"type": "number", "label": "Стоимость", "required": True, "description": "Укажите стоимость в рублях"},
-                "title": {"type": "text", "label": "Название", "required": True, "description": "Введите название услуги"}
             }
             
             # Объединяем дефолтные поля с пользовательскими
@@ -254,70 +255,120 @@ class Database:
 
     #region Методы для таблицы services
 
-    def add_service(self, user_id: int, service_type_id: int, title: str, photo: bytes,
-                   city: str, district: str, price: float, custom_fields: Dict[str, Any]) -> Optional[int]:
+    def add_service(self, user_id: int, service_type_id: int, title: str, photo_id: str,
+                   city: str, district: str, street: str, house: str, number_phone: str, price: float, 
+                   custom_fields: Dict[str, Any]) -> Optional[int]:
         """
         Создает новую услугу
         Args:
-            custom_fields: Дополнительные поля, специфичные для данного типа услуги
+            user_id: ID пользователя
+            service_type_id: ID типа услуги
+            title: Название услуги
+            photo_id: ID фотографии
+            city: Город
+            district: Район
+            street: Улица
+            house: Номер дома
+            number_phone: Номер телефона
+            price: Цена
+            custom_fields: Дополнительные поля
         Returns:
             ID созданной услуги или None в случае ошибки
         """
         try:
             self.cursor.execute("""
                 INSERT INTO services (
-                    user_id, service_type_id, title, photo, city, 
-                    district, price, custom_fields
+                    user_id, service_type_id, title, photo_id, city, 
+                    district, street, house, number_phone, price, custom_fields
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
             """, (
-                user_id, service_type_id, title, photo, city,
-                district, price, json.dumps(custom_fields, ensure_ascii=False)
+                user_id, service_type_id, title, photo_id, city,
+                district, street, house, number_phone, price,
+                json.dumps(custom_fields, ensure_ascii=False)
             ))
-            
+
             result = self.cursor.fetchone()
             self.connection.commit()
             return result[0] if result else None
-            
+
         except Exception as e:
             print(f"Ошибка при создании услуги: {e}")
             return None
 
-    def get_service(self, service_id: int) -> Optional[Dict]:
+    def get_service(self, service_id: Optional[int] = None, user_id: Optional[int] = None) -> Optional[Union[Dict, List[Dict]]]:
         """
-        Получает детальную информацию об услуге
+        Получает детальную информацию об услуге по ID услуги ��ли ID пользователя
+        Args:
+            service_id: ID услуги (опционально)
+            user_id: ID пользователя (опционально)
+        Returns:
+            Dict с информацией об услуге или список Dict для user_id или None при ошибке
         """
         try:
-            self.cursor.execute("""
-                SELECT s.*, st.name as type_name, st.required_fields
+            query = """
+                SELECT 
+                    s.id, s.user_id, s.service_type_id, s.title, s.photo_id,
+                    s.city, s.district, s.street, s.house, s.number_phone, 
+                    s.price, s.custom_fields, s.views, s.created_at,
+                    st.name as type_name, st.required_fields
                 FROM services s
                 JOIN service_types st ON s.service_type_id = st.id
-                WHERE s.id = ? AND s.status = 'active'
-            """, (service_id,))
+                WHERE s.status = 'active'
+            """
+            params = []
+
+            if service_id is not None:
+                query += " AND s.id = ?"
+                params.append(service_id)
+            elif user_id is not None:
+                query += " AND s.user_id = ?"
+                params.append(user_id)
+            else:
+                raise ValueError("Необходимо указать service_id или user_id")
+
+            self.cursor.execute(query, params)
+            rows = self.cursor.fetchall()
             
-            row = self.cursor.fetchone()
-            if not row:
+            if not rows:
                 return None
-                
-            return {
-                "id": row[0],
-                "user_id": row[1],
-                "service_type": {
-                    "id": row[2],
-                    "name": row[12],
-                    "required_fields": json.loads(row[13])
-                },
-                "title": row[3],
-                "photo": row[4],
-                "city": row[5],
-                "district": row[6],
-                "price": row[7],
-                "custom_fields": json.loads(row[8]) if row[8] else {},
-                "views": row[10],
-                "created_at": row[11]
-            }
-            
+
+            def safe_json_loads(json_str: Optional[str]) -> dict:
+                """Безопасная загрузка JSON строки"""
+                if not json_str:
+                    return {}
+                try:
+                    return json.loads(str(json_str))
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+
+            def row_to_dict(row: Tuple) -> Dict:
+                """Преобразование строки результата в словарь"""
+                return {
+                    "id": row[0],
+                    "user_id": row[1], 
+                    "service_type_id": row[2],
+                    "title": row[3],
+                    "photo_id": row[4],
+                    "city": row[5],
+                    "district": row[6],
+                    "street": row[7],
+                    "house": row[8],
+                    "number_phone": row[9],
+                    "price": float(row[10]),
+                    "custom_fields": safe_json_loads(row[11]),
+                    "views": row[12],
+                    "created_at": row[13],
+                    "type_name": row[14],
+                    "required_fields": safe_json_loads(row[15])
+                }
+
+            if service_id is not None:
+                return row_to_dict(rows[0])
+            else:
+                return [row_to_dict(row) for row in rows]
+
         except Exception as e:
             print(f"Ошибка при получении услуги: {e}")
             return None
@@ -354,37 +405,6 @@ class Database:
             print(f"Ошибка при получении списка услуг: {e}")
             return []
 
-    def get_services_by_user(self, user_id: int) -> List[Dict]:
-        """
-        Получает список всех активных услуг пользователя
-        """
-        try:
-            self.cursor.execute("""
-                SELECT s.id, s.title, s.price, s.city, s.district, s.views,
-                       st.name as type_name
-                FROM services s
-                JOIN service_types st ON s.service_type_id = st.id
-                WHERE s.user_id = ? AND s.status = 'active'
-                ORDER BY s.created_at DESC
-            """, (user_id,))
-            
-            services = []
-            for row in self.cursor.fetchall():
-                services.append({
-                    "id": row[0],
-                    "title": row[1],
-                    "price": row[2],
-                    "city": row[3],
-                    "district": row[4],
-                    "views": row[5],
-                    "type_name": row[6]
-                })
-            return services
-            
-        except Exception as e:
-            print(f"Ошибка при получении списка услуг пользователя: {e}")
-            return []
-
     def update_service_views(self, service_id: int) -> None:
         """
         Увеличивает счетчик просмотров услуги
@@ -412,7 +432,7 @@ class Database:
             self.connection.commit()
             return True
         except Exception as e:
-            print(f"Ошибка при деактивации услуги: {e}")
+            print(f"Ошибка при ��еактивации услуги: {e}")
             return False
 
     #endregion
