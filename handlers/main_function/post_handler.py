@@ -8,7 +8,7 @@ from utils.database import Database
 from urllib.parse import quote, unquote
 from typing import Dict, Any, Optional
 
-router = Router()
+router = Router(name='post_handler')
 db = Database()
 
 ITEMS_PER_PAGE = 8
@@ -83,7 +83,7 @@ def create_webapp_form(service_type_id: int) -> Optional[ReplyKeyboardMarkup]:
             param = f"{encoded_name}={encoded_placeholder}"
             field_params.append(param)
 
-        base_url = "https://spontaneous-kashata-919d92.netlify.app/"
+        base_url = "https://spontaneous-kashata-919d92.netlify.app/create"
         full_url = f"{base_url}?{('&').join(field_params)}"
         
         keyboard = ReplyKeyboardBuilder()
@@ -123,15 +123,7 @@ def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Any]) ->
     except Exception as e:
         return f"Ошибка валидации: {str(e)}"
 
-@router.message(lambda m: m.text == "🔙 Назад" or m.text == "🏠 Главное меню")
-async def handle_back(message: Message, state: FSMContext):
-    """Обработка возврата в главное меню"""
-    await state.clear()
-    keyboard = ReplyKeyboardBuilder()
-    keyboard.row(KeyboardButton(text="🏠 Главное меню"))
-    await message.answer("Возвращаемся в главное меню", reply_markup=keyboard.as_markup(resize_keyboard=True))
-
-@router.message(lambda m: m.text == '📈 Выставить свою услугу')
+@router.message(lambda m: m.text == '📈 Выставить свою услугу' or m.text == '/add_service')
 async def start_post_service(message: Message):
     """Начало публикации услуги"""
     await message.answer(
@@ -170,13 +162,12 @@ async def handle_pagination(callback: CallbackQuery):
         await callback.answer("❌ Ошибка пагинации")
     await callback.answer()
 
-@router.message(lambda cq: cq.web_app_data)
-async def process_webapp_data(message: Message, state: FSMContext):
-    """Обработка данных формы"""
+@router.message(lambda message: message.web_app_data and message.web_app_data.button_text == "📝 Заполнить форму")
+async def process_create_webapp_data(message: Message, state: FSMContext):
+    """Обработка данных формы для создания услуги"""
     try:
         # Декодируем и парсим данные с фронтенда
         data = json.loads(message.web_app_data.data)
-        
         # Получаем тип услуги из состояния
         state_data = await state.get_data()
         service_type_id = state_data.get('service_type_id')
@@ -211,7 +202,7 @@ async def process_webapp_data(message: Message, state: FSMContext):
     except json.JSONDecodeError:
         await message.answer("❌ Ошибка обработки данных формы")
     except ValueError as e:
-        await message.answer(f"❌ {str(e)}")
+        await message.answer(f"❌ Проблемс : {str(e)}")
     except Exception as e:
         await message.answer("❌ Произошла неизвестная ошибка")
         print(f"Ошибка обработки формы: {e}")
@@ -246,7 +237,7 @@ async def process_service_photo(message: Message, state: FSMContext):
 
         # Подготавливаем данные для создания услуги
         service_data = {
-            "user_id": user[0],
+            "user_id": user[1],
             "service_type_id": service_type_id,
             "title": form_data.get('title', service_type["name"]),
             "photo_id": message.photo[-1].file_id,
@@ -265,6 +256,11 @@ async def process_service_photo(message: Message, state: FSMContext):
     
         # Создаем услугу
         service_id = db.add_service(**service_data)
+        
+        await message.answer(
+            "✅ Услуга успешно создана\n"
+            "Теперь она будет доступна для поиска и просмотра"
+        )
 
         if not service_id:
             raise Exception("Ошибка при создании услуги")

@@ -6,7 +6,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from keyboards.main_keyboards import to_home_keyboard
 
-router = Router()
+router = Router(name='support_handler')
 
 class SupportState(StatesGroup):
     waiting_for_question = State()

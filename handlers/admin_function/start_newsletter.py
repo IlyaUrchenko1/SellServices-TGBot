@@ -13,7 +13,7 @@ from utils.database import Database
 from utils.variables import ADMIN_IDS
 from keyboards.main_keyboards import admin_keyboard
 
-router = Router()
+router = Router(name='admin')
 db = Database()
 
 USERS_PER_PAGE = 50  # Количество пользователей для рассылки на одной странице

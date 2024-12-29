@@ -8,7 +8,7 @@ from utils.variables import ADMIN_IDS
 from keyboards.main_keyboards import admin_keyboard
 import math
 
-router = Router()
+router = Router(name='admin')
 db = Database()
 
 ITEMS_PER_PAGE = 5

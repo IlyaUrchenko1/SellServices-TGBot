@@ -10,7 +10,7 @@ from utils.database import Database
 from utils.variables import ADMIN_IDS
 from keyboards.main_keyboards import admin_keyboard
 
-router = Router()
+router = Router(name='admin')
 db = Database()
 
 COMPLAINTS_PER_PAGE = 1  # Changed to show 1 complaint per page

@@ -297,143 +297,218 @@ class Database:
             print(f"Ошибка при создании услуги: {e}")
             return None
 
-    def get_service(self, service_id: Optional[int] = None, user_id: Optional[int] = None) -> Optional[Union[Dict, List[Dict]]]:
+    def get_services(self,
+                    service_id: Optional[int] = None,
+                    user_id: Optional[int] = None,
+                    status: Optional[str] = None,
+                    limit: Optional[int] = None,
+                    offset: Optional[int] = None,
+                    order_by: str = 'created_at DESC') -> Optional[Union[Dict, List[Dict]]]:
         """
-        Получает детальную информацию об услуге по ID услуги ��ли ID пользователя
+        Получает услуги с различными фильтрами
         Args:
-            service_id: ID услуги (опционально)
-            user_id: ID пользователя (опционально)
+            service_id: ID конкретной услуги
+            user_id: ID пользователя для получения его услуг 
+            status: Статус услуг ('active', 'deactive', 'deleted', None для всех)
+            limit: Ограничение количества результатов
+            offset: Смещение для пагинации
+            order_by: Сортировка результатов
         Returns:
-            Dict с информацией об услуге или список Dict для user_id или None при ошибке
+            Dict с информацией об услуге или список Dict или None при ошибке
         """
         try:
+            # Базовый запрос с параметризацией для безопасности
             query = """
                 SELECT 
-                    s.id, s.user_id, s.service_type_id, s.title, s.photo_id,
-                    s.city, s.district, s.street, s.house, s.number_phone, 
-                    s.price, s.custom_fields, s.views, s.created_at,
-                    st.name as type_name, st.required_fields
+                    s.*,
+                    st.name as service_type_name,
+                    st.required_fields as service_type_fields,
+                    u.username as seller_username,
+                    u.number_phone as seller_phone
                 FROM services s
-                JOIN service_types st ON s.service_type_id = st.id
-                WHERE s.status = 'active'
+                LEFT JOIN service_types st ON s.service_type_id = st.id
+                LEFT JOIN users u ON s.user_id = u.id
+                WHERE 1=1
             """
             params = []
 
+            # Добавляем фильтры, используя параметризованные запросы
             if service_id is not None:
                 query += " AND s.id = ?"
                 params.append(service_id)
-            elif user_id is not None:
+            if user_id is not None:
                 query += " AND s.user_id = ?"
                 params.append(user_id)
-            else:
-                raise ValueError("Необходимо указать service_id или user_id")
+            if status is not None and status != '':
+                query += " AND s.status = ?"
+                params.append(status)
+
+            # Безопасная сортировка с валидацией
+            allowed_orders = {'created_at', 'updated_at', 'price', 'views', 'id'}
+            order_parts = order_by.lower().split()
+            if len(order_parts) >= 1:
+                field = order_parts[0]
+                direction = 'DESC' if len(order_parts) > 1 and order_parts[1].upper() == 'DESC' else 'ASC'
+                if field in allowed_orders:
+                    query += f" ORDER BY s.{field} {direction}"
+                else:
+                    query += " ORDER BY s.created_at DESC"
+
+            # Добавляем безопасные limit и offset
+            if isinstance(limit, int) and limit > 0:
+                query += " LIMIT ?"
+                params.append(min(limit, 1000))  # Ограничиваем максимальное значение
+            if isinstance(offset, int) and offset >= 0:
+                query += " OFFSET ?"
+                params.append(offset)
 
             self.cursor.execute(query, params)
             rows = self.cursor.fetchall()
-            
+
             if not rows:
                 return None
 
-            def safe_json_loads(json_str: Optional[str]) -> dict:
-                """Безопасная загрузка JSON строки"""
-                if not json_str:
-                    return {}
-                try:
-                    return json.loads(str(json_str))
-                except (json.JSONDecodeError, TypeError):
-                    return {}
+            # Преобразуем результаты в словари
+            result = []
+            columns = [desc[0] for desc in self.cursor.description]
+            
+            for row in rows:
+                item = dict(zip(columns, row))
+                
+                # Безопасно парсим JSON поля
+                for json_field in ['custom_fields', 'service_type_fields']:
+                    if item.get(json_field):
+                        try:
+                            item[json_field] = json.loads(item[json_field])
+                        except (json.JSONDecodeError, TypeError):
+                            item[json_field] = {}
+                    else:
+                        item[json_field] = {}
+                
+                result.append(item)
 
-            def row_to_dict(row: Tuple) -> Dict:
-                """Преобразование строки результата в словарь"""
-                return {
-                    "id": row[0],
-                    "user_id": row[1], 
-                    "service_type_id": row[2],
-                    "title": row[3],
-                    "photo_id": row[4],
-                    "city": row[5],
-                    "district": row[6],
-                    "street": row[7],
-                    "house": row[8],
-                    "number_phone": row[9],
-                    "price": float(row[10]),
-                    "custom_fields": safe_json_loads(row[11]),
-                    "views": row[12],
-                    "created_at": row[13],
-                    "type_name": row[14],
-                    "required_fields": safe_json_loads(row[15])
-                }
-
-            if service_id is not None:
-                return row_to_dict(rows[0])
-            else:
-                return [row_to_dict(row) for row in rows]
+            return result[0] if service_id else result
 
         except Exception as e:
-            print(f"Ошибка при получении услуги: {e}")
+            print(f"Ошибка при получении услуг: {str(e)}")
             return None
 
-    def get_services_by_type(self, type_id: int, limit: int = 20, offset: int = 0) -> List[Dict]:
+    def update_service(self, service_id: int, **kwargs) -> bool:
         """
-        Получает список услуг определенного типа с пагинацией
-        """
-        try:
-            self.cursor.execute("""
-                SELECT s.id, s.title, s.price, s.city, s.district, s.views, 
-                       u.full_name as seller_name
-                FROM services s
-                JOIN users u ON s.user_id = u.id
-                WHERE s.service_type_id = ? AND s.status = 'active'
-                ORDER BY s.created_at DESC
-                LIMIT ? OFFSET ?
-            """, (type_id, limit, offset))
-            
-            services = []
-            for row in self.cursor.fetchall():
-                services.append({
-                    "id": row[0],
-                    "title": row[1],
-                    "price": row[2],
-                    "city": row[3],
-                    "district": row[4],
-                    "views": row[5],
-                    "seller_name": row[6]
-                })
-            return services
-            
-        except Exception as e:
-            print(f"Ошибка при получении списка услуг: {e}")
-            return []
-
-    def update_service_views(self, service_id: int) -> None:
-        """
-        Увеличивает счетчик просмотров услуги
+        Обновляет информацию об услуге
+        Args:
+            service_id: ID услуги
+            **kwargs: Поля для обновления (title, photo_id, city, etc.)
+        Returns:
+            bool: Успешность операции
         """
         try:
-            self.cursor.execute("""
+            allowed_fields = {'title', 'photo_id', 'city', 'district', 'street', 
+                            'house', 'number_phone', 'price', 'custom_fields', 'status'}
+            
+            updates = []
+            params = []
+            
+            for field, value in kwargs.items():
+                if field in allowed_fields:
+                    updates.append(f"{field} = ?")
+                    params.append(value if field != 'custom_fields' 
+                                else json.dumps(value, ensure_ascii=False))
+            
+            if not updates:
+                return False
+                
+            params.append(service_id)
+            query = f"""
                 UPDATE services 
-                SET views = views + 1
+                SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (service_id,))
+            """
+            
+            self.cursor.execute(query, params)
             self.connection.commit()
-        except Exception as e:
-            print(f"Ошибка при обновлении просмотров: {e}")
+            return True
 
-    def deactivate_service(self, service_id: int, user_id: int) -> bool:
+        except Exception as e:
+            print(f"Ошибка при обновлении услуги: {e}")
+            return False
+
+    def delete_service(self, service_id: int, hard_delete: bool = False) -> bool:
         """
-        Деактивирует услугу (только владелец может деактивировать)
+        Удаляет услугу
+        Args:
+            service_id: ID услуги
+            hard_delete: Если True - полное удаление из БД, если False - soft delete
+        Returns:
+            bool: Успешность операции
         """
         try:
-            self.cursor.execute("""
-                UPDATE services 
-                SET status = 'inactive'
-                WHERE id = ? AND user_id = ?
-            """, (service_id, user_id))
+            if hard_delete:
+                self.cursor.execute("DELETE FROM services WHERE id = ?", (service_id,))
+            else:
+                self.cursor.execute("""
+                    UPDATE services 
+                    SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (service_id,))
+                
             self.connection.commit()
             return True
         except Exception as e:
-            print(f"Ошибка при ��еактивации услуги: {e}")
+            print(f"Ошибка при удалении услуги: {e}")
             return False
+
+    def search_services(self, 
+                       search_text: str,
+                       service_type_id: Optional[int] = None,
+                       city: Optional[str] = None,
+                       price_min: Optional[float] = None,
+                       price_max: Optional[float] = None,
+                       limit: int = 20,
+                       offset: int = 0) -> List[Dict]:
+        """
+        Поиск услуг по различным критериям
+        """
+        try:
+            query = """
+                SELECT s.*, st.name as type_name, u.username as seller_username
+                FROM services s
+                JOIN service_types st ON s.service_type_id = st.id
+                JOIN users u ON s.user_id = u.id
+                WHERE s.status = 'active'
+                AND (
+                    LOWER(s.title) LIKE LOWER(?) 
+                    OR LOWER(s.city) LIKE LOWER(?)
+                    OR LOWER(s.district) LIKE LOWER(?)
+                )
+            """
+            params = [f"%{search_text}%"] * 3
+
+            if service_type_id:
+                query += " AND s.service_type_id = ?"
+                params.append(service_type_id)
+            if city:
+                query += " AND LOWER(s.city) = LOWER(?)"
+                params.append(city)
+            if price_min is not None:
+                query += " AND s.price >= ?"
+                params.append(price_min)
+            if price_max is not None:
+                query += " AND s.price <= ?"
+                params.append(price_max)
+
+            query += " ORDER BY s.created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            self.cursor.execute(query, params)
+            
+            columns = [desc[0] for desc in self.cursor.description]
+            return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+
+        except Exception as e:
+            print(f"Ошибка при поиске услуг: {e}")
+            return []
+    
 
     #endregion
 

@@ -12,6 +12,7 @@ from middlewares.private_chat import PrivateChatMiddleware
 from handlers import main_handler
 from handlers.main_function import support_handler, post_handler
 from handlers.admin_function import create_new_type, get_complaints, start_newsletter
+from handlers.main_function.functions import service_profile
 load_dotenv()
 
 # Настройки бота по умолчанию
@@ -26,12 +27,15 @@ async def main():
     # dp.message.middleware(AntiFloodMiddleware(limit=1))  # Антифлуд можно включить по необходимости
 
     # Включение роутеров
-    dp.include_routers(main_handler.router)
-    dp.include_routers(support_handler.router, post_handler.router)
+    dp.include_router(main_handler.router)
+    dp.include_router(support_handler.router)
+    dp.include_router(post_handler.router)
 
-    dp.include_routers(create_new_type.router, 
-                       get_complaints.router, 
-                       start_newsletter.router)
+    dp.include_router(create_new_type.router)
+    dp.include_router(get_complaints.router)
+    dp.include_router(start_newsletter.router)
+    
+    dp.include_router(service_profile.router)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
