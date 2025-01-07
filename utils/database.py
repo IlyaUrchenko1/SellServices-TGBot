@@ -65,6 +65,7 @@ class Database:
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS complaints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT,
                 complainant_telegram_username TEXT,
                 accused_telegram_username TEXT,
                 date TEXT,
@@ -213,6 +214,8 @@ class Database:
     def get_active_service_types(self) -> List[Dict]:
         """
         Получает список всех активных типов услуг
+        Returns:
+            Список словарей с информацией о типах услуг
         """
         try:
             self.cursor.execute("""
@@ -238,6 +241,8 @@ class Database:
     def deactivate_service_type(self, type_id: int) -> bool:
         """
         Деактивирует тип услуги (мягкое удаление)
+        Returns:
+            bool: Успешность операции
         """
         try:
             self.cursor.execute("""
@@ -249,6 +254,26 @@ class Database:
             return True
         except Exception as e:
             print(f"Ошибка при деактивации типа услуги: {e}")
+            return False
+
+    def increment_service_views(self, service_id: int) -> bool:
+        """
+        Увеличивает счетчик просмотров услуги
+        Args:
+            service_id: ID услуги
+        Returns:
+            bool: Успешность операции
+        """
+        try:
+            self.cursor.execute("""
+                UPDATE services
+                SET views = views + 1
+                WHERE id = ?
+            """, (service_id,))
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при обновлении просмотров: {e}")
             return False
 
     #endregion
@@ -298,6 +323,7 @@ class Database:
             return None
 
     def get_services(self,
+                    service_type_id: Optional[int] = None,
                     service_id: Optional[int] = None,
                     user_id: Optional[int] = None,
                     status: Optional[str] = None,
@@ -307,6 +333,7 @@ class Database:
         """
         Получает услуги с различными фильтрами
         Args:
+            service_type_id: ID типа услуги
             service_id: ID конкретной услуги
             user_id: ID пользователя для получения его услуг 
             status: Статус услуг ('active', 'deactive', 'deleted', None для всех)
@@ -336,6 +363,9 @@ class Database:
             if service_id is not None:
                 query += " AND s.id = ?"
                 params.append(service_id)
+            if service_type_id is not None:
+                query += " AND s.service_type_id = ?"
+                params.append(service_type_id)
             if user_id is not None:
                 query += " AND s.user_id = ?"
                 params.append(user_id)
@@ -404,7 +434,7 @@ class Database:
         """
         try:
             allowed_fields = {'title', 'photo_id', 'city', 'district', 'street', 
-                            'house', 'number_phone', 'price', 'custom_fields', 'status'}
+                            'house', 'number_phone', 'price', 'custom_fields', 'status', 'views'}
             
             updates = []
             params = []
@@ -458,79 +488,331 @@ class Database:
             print(f"Ошибка при удалении услуги: {e}")
             return False
 
-    def search_services(self, 
-                       search_text: str,
+    def filter_services(self,
                        service_type_id: Optional[int] = None,
-                       city: Optional[str] = None,
+                       city: Optional[str] = None, 
+                       district: Optional[str] = None,
                        price_min: Optional[float] = None,
                        price_max: Optional[float] = None,
+                       custom_fields: Optional[Dict[str, Any]] = None,
+                       search_text: Optional[str] = None,
+                       sort_by: str = 'created_at',
+                       sort_direction: str = 'DESC',
                        limit: int = 20,
-                       offset: int = 0) -> List[Dict]:
+                       offset: int = 0,
+                       status: str = 'active') -> List[Dict]:
         """
-        Поиск услуг по различным критериям
+        Расширенный поиск и фильтрация услуг
+        Args:
+            service_type_id: ID типа услуги
+            city: Город
+            district: Район
+            price_min: Минимальная цена
+            price_max: Максимальная цена
+            custom_fields: Фильтры по дополнительным полям в формате {"field_name": "value"}
+            search_text: Текст для поиска в названии и описании
+            sort_by: Поле для сортировки
+            sort_direction: Направление сортировки (ASC/DESC)
+            limit: Ограничение количества результатов
+            offset: Смещение для пагинации
+            status: Статус услуги ('active', 'deleted' и т.д.)
+        Returns:
+            Список услуг, соответствующих фильтрам
+        """
+        try:
+            # Базовый запрос с основными JOIN
+            query = """
+                SELECT 
+                    s.*,
+                    st.name as service_type_name,
+                    st.required_fields as service_type_fields,
+                    u.username as seller_username,
+                    u.number_phone as seller_phone
+                FROM services s
+                LEFT JOIN service_types st ON s.service_type_id = st.id
+                LEFT JOIN users u ON s.user_id = u.id
+                WHERE s.status = ?
+            """
+            params = [status]
+
+            # Добавляем фильтры
+            if service_type_id is not None:
+                query += " AND s.service_type_id = ?"
+                params.append(service_type_id)
+            
+            if city:
+                query += " AND LOWER(s.city) LIKE LOWER(?)"
+                params.append(f"%{city}%")
+                
+            if district:
+                query += " AND LOWER(s.district) LIKE LOWER(?)"
+                params.append(f"%{district}%")
+                
+            if price_min is not None:
+                query += " AND s.price >= ?"
+                params.append(float(price_min))
+                
+            if price_max is not None:
+                query += " AND s.price <= ?"
+                params.append(float(price_max))
+
+            # Поиск по тексту в названии и описании
+            if search_text:
+                query += """ AND (
+                    LOWER(s.title) LIKE LOWER(?) 
+                    OR LOWER(json_extract(s.custom_fields, '$.description')) LIKE LOWER(?)
+                )"""
+                search_pattern = f"%{search_text}%"
+                params.extend([search_pattern, search_pattern])
+
+            # Применяем фильтры по дополнительным полям
+            if custom_fields:
+                for field, value in custom_fields.items():
+                    if value is not None and value != '':
+                        query += f" AND json_extract(s.custom_fields, '$.{field}') LIKE ?"
+                        params.append(f"%{value}%")
+
+            # Проверяем и применяем сортировку
+            allowed_sort_fields = {'created_at', 'price', 'views', 'title'}
+            allowed_directions = {'ASC', 'DESC'}
+            
+            sort_by = sort_by.lower() if sort_by else 'created_at'
+            sort_direction = sort_direction.upper() if sort_direction else 'DESC'
+            
+            if sort_by in allowed_sort_fields and sort_direction in allowed_directions:
+                query += f" ORDER BY s.{sort_by} {sort_direction}"
+            else:
+                query += " ORDER BY s.created_at DESC"
+
+            # Добавляем пагинацию
+            query += " LIMIT ? OFFSET ?"
+            params.extend([max(1, int(limit)), max(0, int(offset))])
+
+            # Выполняем запрос
+            self.cursor.execute(query, params)
+            
+            # Формируем результат
+            columns = [desc[0] for desc in self.cursor.description]
+            result = []
+            
+            for row in self.cursor.fetchall():
+                item = dict(zip(columns, row))
+                
+                # Обрабатываем JSON поля
+                for json_field in ['custom_fields', 'service_type_fields']:
+                    try:
+                        if item.get(json_field):
+                            item[json_field] = json.loads(item[json_field])
+                        else:
+                            item[json_field] = {}
+                    except (json.JSONDecodeError, TypeError):
+                        item[json_field] = {}
+                
+                # Приводим числовые поля к правильному типу
+                if 'price' in item:
+                    item['price'] = float(item['price'])
+                if 'views' in item:
+                    item['views'] = int(item['views'])
+                        
+                result.append(item)
+
+            return result
+
+        except Exception as e:
+            print(f"Ошибка при фильтрации услуг: {e}")
+            return []
+
+    def get_cities(self) -> List[str]:
+        """
+        Получает список всех городов из активных услуг
+        """
+        try:
+            self.cursor.execute("""
+                SELECT DISTINCT city 
+                FROM services 
+                WHERE status = 'active'
+                ORDER BY city
+            """)
+            return [row[0] for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Ошибка при получении списка городов: {e}")
+            return []
+
+    def get_districts(self, city: str) -> List[str]:
+        """
+        Получает список районов для конкретного города
+        """
+        try:
+            self.cursor.execute("""
+                SELECT DISTINCT district 
+                FROM services 
+                WHERE status = 'active' AND LOWER(city) = LOWER(?)
+                ORDER BY district
+            """, (city,))
+            return [row[0] for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Ошибка при получении списка районов: {e}")
+            return []
+
+    def get_price_range(self, service_type_id: Optional[int] = None, city: Optional[str] = None) -> Tuple[float, float]:
+        """
+        Получает минимальную и максимальную цену для заданных фильтров
         """
         try:
             query = """
-                SELECT s.*, st.name as type_name, u.username as seller_username
-                FROM services s
-                JOIN service_types st ON s.service_type_id = st.id
-                JOIN users u ON s.user_id = u.id
-                WHERE s.status = 'active'
-                AND (
-                    LOWER(s.title) LIKE LOWER(?) 
-                    OR LOWER(s.city) LIKE LOWER(?)
-                    OR LOWER(s.district) LIKE LOWER(?)
-                )
+                SELECT MIN(price), MAX(price)
+                FROM services
+                WHERE status = 'active'
             """
-            params = [f"%{search_text}%"] * 3
+            params = []
 
             if service_type_id:
-                query += " AND s.service_type_id = ?"
+                query += " AND service_type_id = ?"
                 params.append(service_type_id)
             if city:
-                query += " AND LOWER(s.city) = LOWER(?)"
+                query += " AND LOWER(city) = LOWER(?)"
                 params.append(city)
-            if price_min is not None:
-                query += " AND s.price >= ?"
-                params.append(price_min)
-            if price_max is not None:
-                query += " AND s.price <= ?"
-                params.append(price_max)
-
-            query += " ORDER BY s.created_at DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
 
             self.cursor.execute(query, params)
-            
-            columns = [desc[0] for desc in self.cursor.description]
-            return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
-
+            min_price, max_price = self.cursor.fetchone()
+            return (min_price or 0, max_price or 0)
         except Exception as e:
-            print(f"Ошибка при поиске услуг: {e}")
-            return []
-    
+            print(f"Ошибка при получении диапазона цен: {e}")
+            return (0, 0)
 
+    def get_service_by_id(self, service_id: int) -> Optional[Dict]:
+        """
+        Получает информацию об услуге по его ID
+        """
+        self.cursor.execute("SELECT * FROM services WHERE id = ?", (service_id,))
+        return self.cursor.fetchone()   
+
+    def update_service_status(self, service_id: int, status: str) -> None:
+        """
+        Обновляет статус услуги по его ID
+        """
+        self.cursor.execute("UPDATE services SET status = ? WHERE id = ?", (status, service_id))
+        self.connection.commit()
     #endregion
 
     #region Методы для таблицы complaints
 
-    def add_complaint(self, complainant_telegram_username: str, accused_telegram_username: str, 
-                     date: str, text: str) -> None:
-        self.cursor.execute("""
-            INSERT INTO complaints (complainant_telegram_username, accused_telegram_username, date, text)
-            VALUES (?, ?, ?, ?)
-        """, (complainant_telegram_username, accused_telegram_username, date, text))
-        self.connection.commit()
+    def add_complaint(self, type: str, complainant_telegram_username: str, accused_telegram_username: str, 
+                     date: str, text: str) -> bool:
+        """
+        Добавляет новую жалобу в базу данных
+        Args:
+            type: Тип жалобы ('user' или 'service')
+            complainant_telegram_username: Username пользователя, создавшего жалобу
+            accused_telegram_username: Username обвиняемого пользователя
+            date: Дата создания жалобы
+            text: Текст жалобы
+        Returns:
+            bool: True если жалоба успешно добавлена, False в случае ошибки
+        """
+        try:
+            if type not in ['user', 'service']:
+                raise ValueError("Неверный тип жалобы")
+                
+            self.cursor.execute("""
+                INSERT INTO complaints (type, complainant_telegram_username, accused_telegram_username, date, text)
+                VALUES (?, ?, ?, ?, ?)
+            """, (type, complainant_telegram_username, accused_telegram_username, date, text))
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при добавлении жалобы: {e}")
+            return False
 
+    def get_complaints(self, type: Optional[str] = None, 
+                      complainant: Optional[str] = None,
+                      accused: Optional[str] = None) -> List[Dict]:
+        """
+        Получает список жалоб с возможностью фильтрации
+        Args:
+            type: Тип жалобы для фильтрации ('user' или 'service')
+            complainant: Username заявителя для фильтрации
+            accused: Username обвиняемого для фильтрации
+        Returns:
+            List[Dict]: Список жалоб в виде словарей
+        """
+        try:
+            query = "SELECT * FROM complaints WHERE 1=1"
+            params = []
+            
+            if type:
+                query += " AND type = ?"
+                params.append(type)
+            if complainant:
+                query += " AND complainant_telegram_username = ?"
+                params.append(complainant)
+            if accused:
+                query += " AND accused_telegram_username = ?"
+                params.append(accused)
+                
+            query += " ORDER BY date DESC"
+            
+            self.cursor.execute(query, params)
+            columns = [description[0] for description in self.cursor.description]
+            return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Ошибка при получении жалоб: {e}")
+            return []
 
-    def get_complaints(self) -> List[Tuple]:
-        self.cursor.execute("SELECT * FROM complaints")
-        return self.cursor.fetchall()
+    def delete_complaint(self, complaint_id: int) -> bool:
+        """
+        Удаляет жалобу по ID
+        Args:
+            complaint_id: ID жалобы для удаления
+        Returns:
+            bool: True если жалоба успешно удалена, False в случае ошибки
+        """
+        try:
+            self.cursor.execute("DELETE FROM complaints WHERE id = ?", (complaint_id,))
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при удалении жалобы: {e}")
+            return False
 
+    def delete_complaint_by_complainant_telegram_username(self, complainant_telegram_username: str) -> bool:
+        """
+        Удаляет все жалобы от конкретного пользователя
+        Args:
+            complainant_telegram_username: Username пользователя
+        Returns:
+            bool: True если жалобы успешно удалены, False в случае ошибки
+        """
+        try:
+            self.cursor.execute(
+                "DELETE FROM complaints WHERE complainant_telegram_username = ?", 
+                (complainant_telegram_username,)
+            )
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при удалении жалоб пользователя: {e}")
+            return False
 
-    def delete_complaint_by_complainant_telegram_username(self, complainant_telegram_username: int) -> None:
-        self.cursor.execute("DELETE FROM complaints WHERE complainant_telegram_username = ?", (complainant_telegram_username,))
-        self.connection.commit()
+    def get_user_complaints_count(self, telegram_username: str) -> Dict[str, int]:
+        """
+        Получает количество жалоб на пользователя и от пользователя
+        Args:
+            telegram_username: Username пользователя
+        Returns:
+            Dict с количеством жалоб {'received': X, 'sent': Y}
+        """
+        try:
+            self.cursor.execute("""
+                SELECT 
+                    (SELECT COUNT(*) FROM complaints WHERE accused_telegram_username = ?) as received,
+                    (SELECT COUNT(*) FROM complaints WHERE complainant_telegram_username = ?) as sent
+            """, (telegram_username, telegram_username))
+            row = self.cursor.fetchone()
+            return {'received': row[0], 'sent': row[1]}
+        except Exception as e:
+            print(f"Ошибка при подсчете жалоб: {e}")
+            return {'received': 0, 'sent': 0}
 
     #endregion
 

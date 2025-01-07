@@ -1,21 +1,5 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message
-from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-
-
-def default_start_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = ReplyKeyboardBuilder()
-    keyboard.add(KeyboardButton(text='👁️ Смотреть объявления'))
-    keyboard.add(KeyboardButton(text='👨‍🦰 Поддержка'))
-    return keyboard #Это дефолтная клавиатура, она дополняется кнопками из вне
-
-def admin_keyboard() -> InlineKeyboardMarkup:
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.row(InlineKeyboardButton(text='Рассылка', callback_data='start_broadcast'))
-    keyboard.row(InlineKeyboardButton(text='Просмотр жалоб', callback_data='get_all_reports'))
-    keyboard.row(InlineKeyboardButton(text='Создать новый тип услуги', callback_data='create_service_type'))
-
-    return keyboard.as_markup()
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def to_home_keyboard():
     keyboard = InlineKeyboardBuilder()
@@ -24,3 +8,20 @@ def to_home_keyboard():
     
     return keyboard.as_markup()
 
+def back_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру с кнопкой Назад"""
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
+    return keyboard.as_markup()
+
+def back_to_categories_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру с кнопкой возврата к категориям"""
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="🔙 К категориям", callback_data="back_to_categories"))
+    return keyboard.as_markup()
+
+def back_to_services_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру с кнопкой возврата к списку услуг"""
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="🔙 К списку услуг", callback_data="back_to_services"))
+    return keyboard.as_markup()

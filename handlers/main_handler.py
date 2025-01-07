@@ -1,96 +1,119 @@
 from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
-from keyboards.role_keyboards import seller_keyboard, admin_keyboard, default_user_keyboard, to_home_keyboard
+
+from keyboards.main_keyboards import to_home_keyboard
+from keyboards.role_keyboards import seller_keyboard, user_keyboard, admin_keyboard
+
 from utils.database import Database
 from utils.variables import ADMIN_IDS
 
 router = Router(name='main')
 db = Database()
 
-ITEMS_PER_PAGE = 5
+ITEMS_PER_PAGE = 5  
+
+class FilterStates(StatesGroup):
+    waiting_for_filter = State()
+    waiting_for_field_input = State()
 
 @router.message(CommandStart())
 async def start_command(message: Message):
-    telegram_id = message.from_user.id
+    """Обработка команды /start"""
+    telegram_id = str(message.from_user.id)
     user = db.get_user(telegram_id=telegram_id)
     
     if not user:
         try:
             username = message.from_user.username
             if not username:
-                # Генерируем уникальный username если его нет
                 import random
                 adjectives = ["Epic", "Ninja", "Cool", "Super", "Mega", "Ultra", "Awesome", "Magic", "Cosmic", "Wild"]
                 nouns = ["Unicorn", "Wizard", "Warrior", "Dragon", "Phoenix", "Tiger", "Panda", "Rocket", "Hero"]
                 while True:
                     random_number = random.randint(100, 999)
                     username = f"{random.choice(adjectives)}{random.choice(nouns)}{random_number}"
-                    # Проверяем что такой username еще не существует
                     if not db.get_user(username=username):
                         break
             
             db.add_user(telegram_id=telegram_id, username=username)
+            user = db.get_user(telegram_id=telegram_id)
+            
+            await message.answer(
+                "✅ Ваш профиль успешно создан!",
+                reply_markup=to_home_keyboard()
+            )
+            
         except Exception as e:
-            await message.reply("❌ Произошла ошибка при создании вашего профиля. Попробуйте позже.")
+            await message.answer(
+                "❌ Произошла ошибка при создании вашего профиля. Попробуйте позже.",
+                reply_markup=to_home_keyboard()
+            )
             print(f"Ошибка в start_command: {e}")
             return
 
-    await show_main_menu(message, telegram_id, user)
-
+    await show_main_menu(message, user)
+    
     if message.from_user.id in ADMIN_IDS:
-        keyboard = admin_keyboard()
-        await message.reply("🌟 Поскольку вы являетесь администратором, вы можете использовать следующий функционал: 👇✨", reply_markup=keyboard)
+        await message.answer(
+            "🌟 Панель администратора доступна:\n"
+            "- Рассылка сообщений\n"
+            "- Просмотр жалоб\n"
+            "- Управление типами услуг",
+            reply_markup=admin_keyboard()
+        )
 
-async def show_main_menu(message: Message, telegram_id: int, user, page: int = 0):
-    if db.is_seller(telegram_id=telegram_id):
+async def show_main_menu(message: Message, user) -> None:
+    """Показывает главное меню в зависимости от роли пользователя"""
+    if not user:
+        keyboard = user_keyboard()
+    elif db.is_seller(telegram_id=str(user[1])):  # Используем индекс 1 для получения telegram_id из кортежа
         keyboard = seller_keyboard()
-        services = db.get_services(user_id=user[1])
-        if services:
-            # Логика для отображения услуг и пагинации
-            pass
     else:
-        keyboard = default_user_keyboard()
+        keyboard = user_keyboard()
 
-    await message.reply(
-        f"Привет, {message.from_user.first_name}! 👋\nДобро пожаловать в наш бот!",
-        reply_markup=keyboard
-    )
+    welcome_text = f"👋 Здравствуйте, {message.from_user.first_name}!\n\n"
+    
+    try:
+        await message.answer(welcome_text, reply_markup=keyboard)
+    except Exception as e:
+        print(f"Ошибка отображения меню: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при отображении меню. Попробуйте еще раз.",
+            reply_markup=to_home_keyboard()
+        )
 
-# Обработчик кнопки "Вернуться домой 🏠"
 @router.callback_query(F.data == "go_to_home")
 async def go_to_home(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.answer()
-    
-    telegram_id = callback.from_user.id
-    user = db.get_user(telegram_id=telegram_id)
-    await show_main_menu(callback.message, telegram_id, user)
-
-@router.message(F.text == "/get_id")
-async def get_chat_id(message: Message):
+    """Обработчик возврата в главное меню"""
     try:
-        chat_id = message.chat.id
-        user_id = message.from_user.id
-        await message.answer(
-            f"Chat id: *{chat_id}*\nYour id: *{user_id}*",
-            parse_mode='Markdown'
-        )
+        await state.clear()
+        await callback.answer("🏠 Возвращаемся в главное меню")
+        
+        user = db.get_user(telegram_id=str(callback.from_user.id))
+        if not user:
+            await callback.message.edit_text(
+                "❌ Ошибка получения данных пользователя. Попробуйте перезапустить бота командой /start",
+                reply_markup=to_home_keyboard()
+            )
+            return
+            
+        await show_main_menu(callback.message, user)
+        
+        if callback.from_user.id in ADMIN_IDS:
+            await callback.message.answer(
+                "🌟 Панель администратора доступна:\n"
+                "- Рассылка сообщений\n"
+                "- Просмотр жалоб\n"
+                "- Управление типами услуг",
+                reply_markup=admin_keyboard()
+            )
+            
     except Exception as e:
-        cid = message.chat.id
-        await message.answer("Ошибка при получении ID.")
-
-@router.message(CommandStart())
-async def start_command(message: Message):
-    user = db.get_user(telegram_id=message.from_user.id)
-    
-    if user:
-        if user['role'] == 'admin':
-            await message.answer("Добро пожаловать в админ панель!", reply_markup=admin_keyboard())
-        elif user['role'] == 'seller':
-            await message.answer("Добро пожаловать, продавец!", reply_markup=seller_keyboard())
-        else:
-            await message.answer("Добро пожаловать!", reply_markup=default_user_keyboard())
-    else:
-        await message.answer("Вы не зарегистрированы в системе.")
+        print(f"Ошибка в go_to_home: {e}")
+        await callback.message.edit_text(
+            "❌ Произошла ошибка. Попробуйте еще раз или перезапустите бота командой /start",
+            reply_markup=to_home_keyboard()
+        )

@@ -5,9 +5,8 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from utils.database import Database
 from utils.variables import ADMIN_IDS
-from keyboards.main_keyboards import admin_keyboard
 import math
-
+from keyboards.role_keyboards import admin_keyboard
 router = Router(name='admin')
 db = Database()
 
@@ -28,11 +27,14 @@ def get_pagination_keyboard(total_items, current_page):
     total_pages = math.ceil(total_items / ITEMS_PER_PAGE)
     keyboard = InlineKeyboardBuilder()
     
+    start_idx = (current_page - 1) * ITEMS_PER_PAGE
+    end_idx = min(start_idx + ITEMS_PER_PAGE, total_items)
+    
     nav_buttons = []
     if current_page > 1:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page_{current_page-1}"))
+        nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{current_page-1}"))
     if current_page < total_pages:
-        nav_buttons.append(InlineKeyboardButton(text="➡️ Вперед", callback_data=f"page_{current_page+1}"))
+        nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{current_page+1}"))
         
     if nav_buttons:
         keyboard.row(*nav_buttons)
@@ -49,14 +51,8 @@ def get_back_admin_keyboard(back_callback: str = None):
 
 @router.callback_query(F.data == "create_service_type")
 async def start_create_service_type(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await callback.message.delete()
-
     if callback.from_user.id not in ADMIN_IDS:
-        await callback.message.reply(
-            "❌ У вас нет прав администратора.\n"
-            "Обратитесь к главному администратору для получения доступа."
-        )
+        await callback.answer("❌ У вас нет прав администратора", show_alert=True)
         return
 
     await state.set_state(CreateServiceType.waiting_for_name)
@@ -76,7 +72,7 @@ async def start_create_service_type(callback: CallbackQuery, state: FSMContext):
             },
             "number_phone": {
                 "type": "text",
-                "label": "Номер телефона",
+                "label": "Номер телефона", 
                 "description": "Укажите номер телефона для связи",
                 "required": True
             },
@@ -92,7 +88,7 @@ async def start_create_service_type(callback: CallbackQuery, state: FSMContext):
     
     keyboard = get_back_admin_keyboard()
     
-    await callback.message.answer(
+    await callback.message.edit_text(
         "📝 Добро пожаловать в создание нового типа услуги!\n\n"
         "Пожалуйста, введите название для нового типа услуги.\n"
         "Это название будут видеть все пользователи при выборе категории.\n\n"
@@ -108,7 +104,7 @@ async def start_create_service_type(callback: CallbackQuery, state: FSMContext):
 async def process_name(message: Message, state: FSMContext):
     name = message.text.strip()
     if len(name) < 3:
-        await message.reply("❌ Название слишком короткое. Пожалуйста, введите более подробное название.")
+        await message.answer("❌ Название слишком короткое. Пожалуйста, введите более подробное название.")
         return
         
     await state.update_data(name=name)
@@ -124,7 +120,7 @@ async def add_new_field(message: Message, state: FSMContext):
     
     keyboard = get_back_admin_keyboard(back_callback="back_to_name")
     
-    await message.reply(
+    await message.answer(
         "🔑 Текущие поля:\n"
         f"{field_list}\n\n"
         "Введите техническое название нового поля (используйте английские буквы, цифры или знак подчеркивания (_)):\n\n"
@@ -142,14 +138,14 @@ async def process_field_name(message: Message, state: FSMContext):
     field_name = message.text.lower().strip()
     
     if field_name in RESERVED_FIELDS:
-        await message.reply(
+        await message.answer(
             "❌ Это имя зарезервировано системой!\n"
             "Пожалуйста, выберите другое название для поля."
         )
         return
         
     if not field_name.replace("_", "").isalnum():
-        await message.reply(
+        await message.answer(
             "❌ Некорректное название поля!\n\n"
             "Используйте только:\n"
             "- Английские буквы (a-z)\n"
@@ -161,7 +157,7 @@ async def process_field_name(message: Message, state: FSMContext):
         
     data = await state.get_data()
     if field_name in data.get("fields", {}):
-        await message.reply(
+        await message.answer(
             "❌ Поле с таким названием уже существует!\n"
             "Пожалуйста, выберите другое название."
         )
@@ -181,7 +177,7 @@ async def process_field_name(message: Message, state: FSMContext):
     )
     
     await state.set_state(CreateServiceType.waiting_for_field_type)
-    await message.reply(
+    await message.answer(
         "📊 Выберите тип данных для поля:\n\n"
         "📝 Текст - для ввода текста (описание, адрес)\n"
         "🔢 Число - для цифр (стаж, цена, возраст)\n" 
@@ -191,15 +187,13 @@ async def process_field_name(message: Message, state: FSMContext):
 
 @router.callback_query(CreateServiceType.waiting_for_field_type)
 async def process_field_type(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
     field_type = callback.data.split(":")[1]
     await state.update_data(current_field_type=field_type)
-    await callback.message.delete()
     
     keyboard = get_back_admin_keyboard(back_callback="back_to_field_type")
     
     await state.set_state(CreateServiceType.waiting_for_field_label)
-    await callback.message.answer(
+    await callback.message.edit_text(
         "💭 Введите понятное название поля для пользователей:\n\n"
         "✨ Примеры:\n"
         "- Опыт работы\n"
@@ -214,7 +208,7 @@ async def process_field_type(callback: CallbackQuery, state: FSMContext):
 async def process_field_label(message: Message, state: FSMContext):
     label = message.text.strip()
     if len(label) < 3:
-        await message.reply("❌ Название слишком короткое. Введите более понятное название.")
+        await message.answer("❌ Название слишком короткое. Введите более понятное название.")
         return
         
     await state.update_data(current_field_label=label)
@@ -222,7 +216,7 @@ async def process_field_label(message: Message, state: FSMContext):
     keyboard = get_back_admin_keyboard(back_callback="back_to_field_label")
     
     await state.set_state(CreateServiceType.waiting_for_field_description)
-    await message.reply(
+    await message.answer(
         "📝 Введите подсказку для пользователей:\n\n"
         "✨ Примеры хороших подсказок:\n"
         "- Укажите ваш опыт работы в годах\n"
@@ -236,7 +230,7 @@ async def process_field_label(message: Message, state: FSMContext):
 async def process_field_description(message: Message, state: FSMContext):
     description = message.text.strip()
     if len(description) < 10:
-        await message.reply("❌ Подсказка слишком короткая. Опишите подробнее, что нужно ввести.")
+        await message.answer("❌ Подсказка слишком короткая. Опишите подробнее, что нужно ввести.")
         return
         
     await state.update_data(current_field_description=description)
@@ -252,7 +246,7 @@ async def process_field_description(message: Message, state: FSMContext):
     )
     
     await state.set_state(CreateServiceType.waiting_for_field_required)
-    await message.reply(
+    await message.answer(
         "❓ Должен ли пользователь обязательно заполнить это поле?\n\n"
         "✅ Да - поле обязательно для заполнения\n"
         "❌ Нет - поле можно оставить пустым",
@@ -261,15 +255,13 @@ async def process_field_description(message: Message, state: FSMContext):
 
 @router.callback_query(CreateServiceType.waiting_for_field_required)
 async def process_field_required(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
     required = callback.data.split("_")[1] == "true"
-    await callback.message.delete()
     
     if required and (await state.get_data())["current_field_type"] == "select":
         keyboard = get_back_admin_keyboard(back_callback="back_to_field_required")
         
         await state.set_state(CreateServiceType.waiting_for_select_options)
-        await callback.message.answer(
+        await callback.message.edit_text(
             "📝 Введите варианты для выбора через запятую:\n\n"
             "✨ Примеры:\n"
             "- Начинающий, Продвинутый, Эксперт\n"
@@ -285,7 +277,7 @@ async def process_field_required(callback: CallbackQuery, state: FSMContext):
 async def process_select_options(message: Message, state: FSMContext):
     options = [opt.strip() for opt in message.text.split(",") if opt.strip()]
     if len(options) < 2:
-        await message.reply(
+        await message.answer(
             "❌ Ошибка! Нужно указать минимум 2 варианта.\n"
             "Введите варианты через запятую."
         )
@@ -322,18 +314,25 @@ async def save_field(message: Message, state: FSMContext, required: bool, option
     )
     
     await state.set_state(CreateServiceType.waiting_for_more_fields)
-    await message.answer(
-        f"✅ Поле успешно добавлено!\n\n"
-        f"📊 Текущее количество полей: {field_count}\n\n"
-        "Что делаем дальше?",
-        reply_markup=keyboard.as_markup()
-    )
+    
+    if isinstance(message, Message):
+        await message.answer(
+            f"✅ Поле успешно добавлено!\n\n"
+            f"📊 Текущее количество полей: {field_count}\n\n"
+            "Что делаем дальше?",
+            reply_markup=keyboard.as_markup()
+        )
+    else:
+        await message.edit_text(
+            f"✅ Поле успешно добавлено!\n\n"
+            f"📊 Текущее количество полей: {field_count}\n\n"
+            "Что делаем дальше?",
+            reply_markup=keyboard.as_markup()
+        )
 
 @router.callback_query(F.data.startswith("back_to_"))
 async def handle_back(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
     step = callback.data.replace("back_to_", "")
-    await callback.message.delete()
     
     step_handlers = {
         "name": start_create_service_type,
@@ -351,11 +350,10 @@ async def handle_back(callback: CallbackQuery, state: FSMContext):
         if callable(handler):
             await handler(callback, state) if isinstance(handler, type(lambda: None)) else await handler(callback.message, state)
     else:
-        await callback.message.reply("❌ Неизвестный шаг для возврата.")
+        await callback.answer("❌ Неизвестный шаг для возврата", show_alert=True)
 
 @router.callback_query(F.data == "admin_menu")
 async def return_to_admin_menu(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
     await state.clear()
     await callback.message.edit_text(
         "👨‍💼 Админ-панель\n\n"
@@ -365,15 +363,12 @@ async def return_to_admin_menu(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(CreateServiceType.waiting_for_more_fields)
 async def process_more_fields(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await callback.message.delete()
-    
     if callback.data == "add_field":
         await add_new_field(callback.message, state)
     elif callback.data == "finish":
         data = await state.get_data()
         if not data.get("fields"):
-            await callback.message.answer(
+            await callback.message.edit_text(
                 "❌ Ошибка: Нужно добавить хотя бы одно поле!\n"
                 "Давайте создадим первое поле."
             )
@@ -387,7 +382,7 @@ async def process_more_fields(callback: CallbackQuery, state: FSMContext):
                 required_fields=data["fields"]
             )
             if type_id:
-                await callback.message.answer(
+                await callback.message.edit_text(
                     "✅ Поздравляем!\n\n"
                     f"Новый тип услуги \"{data['name']}\" успешно создан!\n"
                     f"Количество настроенных полей: {len(data['fields'])}\n\n"
@@ -395,14 +390,14 @@ async def process_more_fields(callback: CallbackQuery, state: FSMContext):
                     reply_markup=admin_keyboard()
                 )
             else:
-                await callback.message.answer(
+                await callback.message.edit_text(
                     "❌ Ошибка при создании типа услуги\n\n"
                     "Возможно, тип услуги с таким названием уже существует.\n"
                     "Попробуйте создать тип услуги с другим названием.",
                     reply_markup=admin_keyboard()
                 )
         except Exception as e:
-            await callback.message.answer(
+            await callback.message.edit_text(
                 f"❌ Произошла ошибка:\n{str(e)}\n\n"
                 "Пожалуйста, попробуйте еще раз или обратитесь к разработчику.",
                 reply_markup=admin_keyboard()
@@ -410,4 +405,4 @@ async def process_more_fields(callback: CallbackQuery, state: FSMContext):
         finally:
             await state.clear()
     else:
-        await callback.message.reply("❌ Неизвестная команда.")
+        await callback.answer("❌ Неизвестная команда", show_alert=True)

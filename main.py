@@ -8,28 +8,27 @@ from dotenv import load_dotenv
 from middlewares.antiflood import AntiFloodMiddleware
 from middlewares.check_ban import BanCheckMiddleware
 from middlewares.private_chat import PrivateChatMiddleware
-
+from middlewares.work_set import WorkSetMiddleware
 from handlers import main_handler
-from handlers.main_function import support_handler, post_handler
+from handlers.main_function import support_handler, post_handler, watch_handler 
 from handlers.admin_function import create_new_type, get_complaints, start_newsletter
 from handlers.main_function.functions import service_profile
 load_dotenv()
 
-# Настройки бота по умолчанию
 default_setting = DefaultBotProperties(parse_mode='HTML')
 bot = Bot(os.getenv("BOT_TOKEN"), default=default_setting)
 dp = Dispatcher()
 
 async def main():
-    # Добавление промежуточных обработчиков
     dp.message.middleware(PrivateChatMiddleware())
     dp.message.middleware(BanCheckMiddleware())
+    dp.message.middleware(WorkSetMiddleware())  # Устанавливаем тех. работы в боте
     # dp.message.middleware(AntiFloodMiddleware(limit=1))  # Антифлуд можно включить по необходимости
 
-    # Включение роутеров
     dp.include_router(main_handler.router)
     dp.include_router(support_handler.router)
     dp.include_router(post_handler.router)
+    dp.include_router(watch_handler.router)
 
     dp.include_router(create_new_type.router)
     dp.include_router(get_complaints.router)

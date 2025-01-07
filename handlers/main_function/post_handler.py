@@ -5,6 +5,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import json
 from utils.database import Database
+from keyboards.role_keyboards import seller_keyboard
+from keyboards.main_keyboards import to_home_keyboard
 from urllib.parse import quote, unquote
 from typing import Dict, Any, Optional
 
@@ -14,6 +16,8 @@ db = Database()
 ITEMS_PER_PAGE = 8
 
 class ServiceStates(StatesGroup):
+    selecting_type = State()
+    filling_form = State()
     waiting_for_photo = State()
 
 def create_pagination_keyboard(total_items: int, current_page: int) -> InlineKeyboardMarkup:
@@ -21,22 +25,27 @@ def create_pagination_keyboard(total_items: int, current_page: int) -> InlineKey
     total_pages = (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     keyboard = InlineKeyboardBuilder()
     
-    buttons = []
+    row_buttons = []
     
     if current_page > 1:
-        buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{current_page-1}"))
+        row_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{current_page-1}"))
     
-    buttons.append(InlineKeyboardButton(text=f"{current_page}/{total_pages}", callback_data="current_page"))
+    row_buttons.append(InlineKeyboardButton(text=f"{current_page}/{total_pages}", callback_data="current_page"))
     
     if current_page < total_pages:
-        buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{current_page+1}"))
+        row_buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{current_page+1}"))
     
-    keyboard.row(*buttons)
+    keyboard.row(*row_buttons)
+    keyboard.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="go_to_home"))
+    
     return keyboard.as_markup()
 
-def build_service_types_keyboard(page: int = 1) -> InlineKeyboardMarkup:
+def build_service_types_keyboard(page: int = 1) -> Optional[InlineKeyboardMarkup]:
     """Создает клавиатуру типов услуг с пагинацией"""
     service_types = db.get_active_service_types()
+    if not service_types:
+        return None
+        
     keyboard = InlineKeyboardBuilder()
     
     start_idx = (page - 1) * ITEMS_PER_PAGE
@@ -64,7 +73,6 @@ def create_webapp_form(service_type_id: int) -> Optional[ReplyKeyboardMarkup]:
         if not service_type or "required_fields" not in service_type:
             return None
             
-        # Формируем поля для фронтенда, исключая поле photo
         fields = {}
         for name, data in service_type["required_fields"].items():
             if name != "photo" and isinstance(data, dict):
@@ -75,7 +83,6 @@ def create_webapp_form(service_type_id: int) -> Optional[ReplyKeyboardMarkup]:
                     "required": data.get("required", True)
                 }
 
-        # Кодируем параметры для URL
         field_params = []
         for name, data in fields.items():
             encoded_name = quote(name)
@@ -105,7 +112,6 @@ def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Any]) ->
     """Валидация данных формы"""
     try:
         for field, field_data in required_fields.items():
-            # Пропускаем валидацию поля photo
             if field == "photo":
                 continue
                 
@@ -124,15 +130,24 @@ def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Any]) ->
         return f"Ошибка валидации: {str(e)}"
 
 @router.message(lambda m: m.text == '📈 Выставить свою услугу' or m.text == '/add_service')
-async def start_post_service(message: Message):
+async def start_post_service(message: Message, state: FSMContext):
     """Начало публикации услуги"""
+    keyboard = build_service_types_keyboard()
+    if not keyboard:
+        await message.answer(
+            "❌ В данный момент нет доступных категорий услуг",
+            reply_markup=to_home_keyboard()
+        )
+        return
+        
+    await state.set_state(ServiceStates.selecting_type)
     await message.answer(
         "📋 Выберите категорию услуги:\n"
         "❗️ Выбор категории влияет на видимость вашей услуги для клиентов",
-        reply_markup=build_service_types_keyboard()
+        reply_markup=keyboard
     )
 
-@router.callback_query(lambda c: c.data.startswith('service_type:'))
+@router.callback_query(ServiceStates.selecting_type, lambda c: c.data.startswith('service_type:'))
 async def handle_service_type_selection(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора типа услуги"""
     try:
@@ -141,34 +156,47 @@ async def handle_service_type_selection(callback: CallbackQuery, state: FSMConte
         
         keyboard = create_webapp_form(service_type_id)
         if keyboard:
-            await callback.message.answer(
+            await state.set_state(ServiceStates.filling_form)
+            await callback.message.edit_text(
                 "🖥 Нажмите «Заполнить форму» для создания объявления",
                 reply_markup=keyboard
             )
         else:
-            await callback.message.answer("❌ Ошибка получения формы")
+            await callback.message.edit_text(
+                "❌ Ошибка получения формы",
+                reply_markup=to_home_keyboard()
+            )
     except Exception as e:
-        await callback.message.answer(f"❌ Ошибка выбора категории: {e}")
+        await callback.message.edit_text(
+            f"❌ Ошибка выбора категории: {e}",
+            reply_markup=to_home_keyboard()
+        )
     finally:
         await callback.answer()
 
-@router.callback_query(F.data.startswith('page_'))
+@router.callback_query(ServiceStates.selecting_type, F.data.startswith('page_'))
 async def handle_pagination(callback: CallbackQuery):
     """Обработка пагинации"""
     try:
         page = int(callback.data.split('_')[1])
-        await callback.message.edit_reply_markup(reply_markup=build_service_types_keyboard(page))
-    except Exception:
+        keyboard = build_service_types_keyboard(page)
+        if keyboard:
+            await callback.message.edit_reply_markup(reply_markup=keyboard)
+        else:
+            await callback.message.edit_text(
+                "❌ Ошибка загрузки категорий",
+                reply_markup=to_home_keyboard()
+            )
+    except Exception as e:
+        print(f"Ошибка пагинации: {e}")
         await callback.answer("❌ Ошибка пагинации")
     await callback.answer()
 
-@router.message(lambda message: message.web_app_data and message.web_app_data.button_text == "📝 Заполнить форму")
+@router.message(ServiceStates.filling_form, lambda message: message.web_app_data and message.web_app_data.button_text == "📝 Заполнить форму")
 async def process_create_webapp_data(message: Message, state: FSMContext):
     """Обработка данных формы для создания услуги"""
     try:
-        # Декодируем и парсим данные с фронтенда
         data = json.loads(message.web_app_data.data)
-        # Получаем тип услуги из состояния
         state_data = await state.get_data()
         service_type_id = state_data.get('service_type_id')
         
@@ -179,13 +207,12 @@ async def process_create_webapp_data(message: Message, state: FSMContext):
         if not service_type:
             raise ValueError("Неверный тип услуги")
             
-        # Валидируем данные
         validation_error = validate_form_data(data, service_type["required_fields"])
         if validation_error:
             raise ValueError(validation_error)
             
-        # Сохраняем данные в состояние
         await state.update_data(form_data=data)
+        await state.set_state(ServiceStates.waiting_for_photo)
         
         keyboard = ReplyKeyboardBuilder()
         keyboard.row(KeyboardButton(text="🔙 Отмена"))
@@ -197,21 +224,30 @@ async def process_create_webapp_data(message: Message, state: FSMContext):
             reply_markup=keyboard.as_markup(resize_keyboard=True)
         )
         
-        await state.set_state(ServiceStates.waiting_for_photo)
-        
     except json.JSONDecodeError:
-        await message.answer("❌ Ошибка обработки данных формы")
+        await message.answer(
+            "❌ Ошибка обработки данных формы",
+            reply_markup=to_home_keyboard()
+        )
+        await state.clear()
     except ValueError as e:
-        await message.answer(f"❌ Проблемс : {str(e)}")
+        await message.answer(
+            f"❌ Ошибка: {str(e)}",
+            reply_markup=to_home_keyboard()
+        )
+        await state.clear()
     except Exception as e:
-        await message.answer("❌ Произошла неизвестная ошибка")
         print(f"Ошибка обработки формы: {e}")
+        await message.answer(
+            "❌ Произошла неизвестная ошибка",
+            reply_markup=to_home_keyboard()
+        )
+        await state.clear()
 
 @router.message(ServiceStates.waiting_for_photo, F.photo)
 async def process_service_photo(message: Message, state: FSMContext):
     """Обработка фото услуги"""
     try:
-        # Получаем данные из состояния
         data = await state.get_data()
         form_data = data.get('form_data')
         service_type_id = data.get('service_type_id')
@@ -219,23 +255,19 @@ async def process_service_photo(message: Message, state: FSMContext):
         if not all([form_data, service_type_id]):
             raise ValueError("Отсутствуют необходимые данные формы")
 
-        # Получаем информацию о типе услуги
         service_type = db.get_service_type(service_type_id)
         if not service_type:
             raise ValueError("Неверный тип услуги")
 
-        # Проверяем наличие пользователя в БД
         user = db.get_user(telegram_id=str(message.from_user.id))
         if not user:
             raise ValueError("Пользователь не найден")
 
-        # Парсим адрес
         address_parts = form_data.get('adress', '').split(',')
         city = address_parts[0].strip().replace('г ', '') if len(address_parts) > 0 else ''
         street = address_parts[1].strip().replace('ул ', '') if len(address_parts) > 1 else ''
         house = address_parts[2].strip().replace('д ', '') if len(address_parts) > 2 else ''
 
-        # Подготавливаем данные для создания услуги
         service_data = {
             "user_id": user[1],
             "service_type_id": service_type_id,
@@ -254,27 +286,29 @@ async def process_service_photo(message: Message, state: FSMContext):
             }
         }
     
-        # Создаем услугу
         service_id = db.add_service(**service_data)
-        
-        await message.answer(
-            "✅ Услуга успешно создана\n"
-            "Теперь она будет доступна для поиска и просмотра"
-        )
-
         if not service_id:
             raise Exception("Ошибка при создании услуги")
 
-        # Очищаем состояние
         await state.clear()
+        await message.answer(
+            "✅ Услуга успешно создана!\n"
+            "Теперь она будет доступна для поиска и просмотра", 
+            reply_markup=seller_keyboard()
+        )
 
     except ValueError as e:
-        await message.answer(f"❌ {str(e)}")
-        print(f"Ошибка валидации: {e}")
+        await message.answer(
+            f"❌ Ошибка: {str(e)}",
+            reply_markup=to_home_keyboard()
+        )
+        await state.clear()
         
     except Exception as e:
+        print(f"Критическая ошибка: {e}")
         await message.answer(
             "❌ Ошибка публикации услуги\n"
-            "Попробуйте позже или обратитесь в поддержку"
+            "Попробуйте позже или обратитесь в поддержку",
+            reply_markup=to_home_keyboard()
         )
-        print(f"Критическая ошибка: {e}")
+        await state.clear()

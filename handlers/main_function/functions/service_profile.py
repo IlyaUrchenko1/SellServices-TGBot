@@ -85,11 +85,11 @@ async def start_edit_service(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Услуга не найдена")
             return
             
-        await state.update_data(edit_service_id=service_id, page=page)
+        await state.update_data(edit_service_id=service_id, page=page, last_message_id=callback.message.message_id)
         
         keyboard = create_webapp_form_for_edit(service)
         if keyboard:
-            await callback.message.answer(
+            await callback.message.edit_text(
                 "🖥 Выберите действие:\n"
                 "• «Редактировать» - изменить данные услуги\n"
                 "• «Изменить фото» - загрузить новое изображение\n"
@@ -97,10 +97,10 @@ async def start_edit_service(callback: CallbackQuery, state: FSMContext):
                 reply_markup=keyboard
             )
         else:
-            await callback.message.answer("❌ Ошибка получения формы")
+            await callback.message.edit_text("❌ Ошибка получения формы")
             
     except Exception as e:
-        await callback.message.answer(f"❌ Ошибка редактирования: {e}")
+        await callback.message.edit_text(f"❌ Ошибка редактирования: {e}")
     finally:
         await callback.answer()
 
@@ -111,6 +111,7 @@ async def process_edit_webapp_data(message: Message, state: FSMContext):
         data = json.loads(message.web_app_data.data)
         state_data = await state.get_data()
         service_id = state_data.get('edit_service_id')
+        last_message_id = state_data.get('last_message_id')
         
         if not service_id:
             raise ValueError("Услуга не найдена")
@@ -164,6 +165,13 @@ async def process_edit_webapp_data(message: Message, state: FSMContext):
             KeyboardButton(text="🔙 Отмена")
         )
         
+        # Удаляем предыдущее сообщение если есть
+        if last_message_id:
+            try:
+                await message.bot.delete_message(message.chat.id, last_message_id)
+            except:
+                pass
+                
         await message.answer(
             "📸 Отправьте новое фото услуги или нажмите «Пропустить» чтобы оставить текущее",
             reply_markup=keyboard.as_markup(resize_keyboard=True)
@@ -204,12 +212,17 @@ async def process_edit_photo(message: Message, state: FSMContext):
     
         # Обновляем услугу
         if db.update_service(service_id, **form_data):
-            await message.answer("✅ Услуга успешно обновлена")
-            
             updated_service = db.get_services(service_id=service_id)
             caption = await format_service_info(updated_service)
             keyboard = await get_service_keyboard(service_id, updated_service['status'], page)
             
+            # Удаляем предыдущие сообщения
+            async for msg in message.chat.history(limit=3):
+                try:
+                    await msg.delete()
+                except:
+                    pass
+                    
             if updated_service.get('photo_id'):
                 await message.answer_photo(
                     photo=updated_service['photo_id'],
@@ -218,6 +231,8 @@ async def process_edit_photo(message: Message, state: FSMContext):
                 )
             else:
                 await message.answer(caption, reply_markup=keyboard)
+                
+            await message.answer("✅ Услуга успешно обновлена")
         else:
             raise Exception("Ошибка при обновлении услуги")
 
@@ -265,13 +280,11 @@ async def format_service_info(service: dict) -> str:
             f"━━━━━━━━━━━━━━━\n"
         )
 
-        # Получаем тип услуги для доступа к required_fields
         service_type = db.get_service_type(service['service_type_id'])
         if not service_type:
             print(f"Тип услуги не найден: {service['service_type_id']}")
             return caption
 
-        # Добавляем дополнительные поля
         custom_fields = service.get('custom_fields', {})
         required_fields = service_type.get('required_fields', {})
         
@@ -303,6 +316,8 @@ async def get_service_keyboard(service_id: int, status: str, page: int) -> Inlin
     
     for text, callback_data in buttons:
         kb.row(InlineKeyboardButton(text=text, callback_data=callback_data))
+        
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"services_page_{page}"))
         
     return kb.as_markup()
 
@@ -347,6 +362,7 @@ async def show_services(message: types.Message):
 
         total_pages = (len(services) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
         
+                
         for idx, service in enumerate(services[:ITEMS_PER_PAGE]):
             caption = await format_service_info(service)
             keyboard = await get_service_keyboard(service['id'], service['status'], 0)
@@ -374,7 +390,16 @@ async def handle_pagination(callback: CallbackQuery):
     try:
         page = int(callback.data.split("_")[2])
         user = db.get_user(telegram_id=str(callback.from_user.id))
+        
+        if not user:
+            await callback.answer("❌ Пользователь не найден")
+            return
+            
         services = db.get_services(user_id=user[0])
+        
+        if not services:
+            await callback.answer("❌ У вас нет услуг")
+            return
         
         if isinstance(services, dict):
             services = [services]
@@ -383,7 +408,12 @@ async def handle_pagination(callback: CallbackQuery):
         start_idx = page * ITEMS_PER_PAGE
         end_idx = start_idx + ITEMS_PER_PAGE
         
-        await callback.message.delete()
+        # Удаляем все предыдущие сообщения
+        async for msg in callback.message.chat.history(limit=10):
+            try:
+                await msg.delete()
+            except:
+                continue
         
         for service in services[start_idx:end_idx]:
             caption = await format_service_info(service)
@@ -453,14 +483,13 @@ async def delete_service(callback: CallbackQuery):
     try:
         service_id = int(callback.data.split("_")[2])
         
-        # Запрашиваем подтверждение
         kb = InlineKeyboardBuilder()
         kb.row(
             InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_{service_id}"),
             InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_delete_{service_id}")
         )
         
-        await callback.message.answer(
+        await callback.message.edit_text(
             "⚠️ Вы уверены, что хотите удалить эту услугу?\n"
             "Это действие нельзя отменить.",
             reply_markup=kb.as_markup()
@@ -477,11 +506,15 @@ async def confirm_delete_service(callback: CallbackQuery):
         service_id = int(callback.data.split("_")[2])
         if db.delete_service(service_id):
             await callback.answer("✅ Услуга успешно удалена")
-            await callback.message.delete()
-            # Удаляем сообщение с услугой
-            messages_to_delete = 2  # Сообщение с услугой и сообщение с подтверждением
-            async for message in callback.message.chat.history(limit=messages_to_delete):
-                await message.delete()
+            
+            # Удаляем сообщения и показываем обновленный список
+            async for msg in callback.message.chat.history(limit=10):
+                try:
+                    await msg.delete()
+                except:
+                    continue
+                    
+            await show_services(callback.message)
         else:
             await callback.answer("❌ Ошибка при удалении услуги")
     except Exception as e:
@@ -491,8 +524,28 @@ async def confirm_delete_service(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("cancel_delete_"))
 async def cancel_delete_service(callback: CallbackQuery):
     """Отмена удаления услуги"""
-    await callback.message.delete()
-    await callback.answer("Удаление отменено")
+    try:
+        service_id = int(callback.data.split("_")[2])
+        service = db.get_services(service_id=service_id)
+        
+        if service:
+            caption = await format_service_info(service)
+            keyboard = await get_service_keyboard(service_id, service['status'], 0)
+            
+            if service.get('photo_id'):
+                await callback.message.edit_caption(
+                    caption=caption,
+                    reply_markup=keyboard
+                )
+            else:
+                await callback.message.edit_text(
+                    text=caption,
+                    reply_markup=keyboard
+                )
+        await callback.answer("Удаление отменено")
+    except Exception as e:
+        print(f"Ошибка при отмене удаления: {e}")
+        await callback.answer("❌ Произошла ошибка")
 
 def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Dict[str, Any]]) -> Optional[str]:
     """
@@ -505,4 +558,3 @@ def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Dict[str
             if field_name not in data or not data[field_name]:
                 return f"Поле '{field_info.get('label', field_name)}' обязательно для заполнения"
     return None
-
