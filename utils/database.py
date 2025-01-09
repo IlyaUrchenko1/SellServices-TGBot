@@ -19,7 +19,11 @@ class Database:
                 telegram_id TEXT UNIQUE,
                 username TEXT,
                 number_phone TEXT,
-                is_seller BOOLEAN DEFAULT 0
+                is_seller BOOLEAN DEFAULT 0,
+                full_name TEXT,
+                work_time_start TEXT DEFAULT '10:00',
+                work_time_end TEXT DEFAULT '22:00',
+                work_days TEXT DEFAULT '1,2,3,4,5,6,7'
             )
         """)
 
@@ -33,7 +37,7 @@ class Database:
                 required_fields TEXT NOT NULL DEFAULT '{
                     "photo": {"type": "image", "label": "Фотография услуги", "required": true, "description": "Загрузите фото, отражающее вашу услугу"},
                     "adress": {"type": "adress", "label": "Адрес", "required": true, "description": "Укажите адрес оказания услуги"},
-                    "number_phone": {"type": "text", "label": "Номер телефона", "required": true, "description": "Укажите номер телефона для связи"},
+                    "number_phone": {"type": "text", "label": "Номер телефона", "required": false, "description": "Укажите номер телефона для связи"},
                     "price": {"type": "number", "label": "Стоимость", "required": true, "description": "Укажите стоимость услуги в рублях"}
                 }'
             )
@@ -87,58 +91,147 @@ class Database:
 
     #region Методы для таблицы users
 
-    def add_user(self, telegram_id: str, username: str, number_phone: Optional[str] = None, is_seller: bool = False) -> None:
+    def add_user(self, telegram_id: str, username: str, number_phone: Optional[str] = None, 
+                 is_seller: bool = False, full_name: Optional[str] = None) -> Optional[int]:
+        """Добавляет нового пользователя в базу данных
+        Args:
+            telegram_id: Telegram ID пользователя
+            username: Username пользователя
+            number_phone: Номер телефона (опционально)
+            is_seller: Является ли продавцом
+            full_name: Полное имя (опционально)
+        Returns:
+            ID созданного пользователя или None в случае ошибки
+        """
         try:
             self.cursor.execute("""
-                INSERT INTO users (telegram_id, username, number_phone, is_seller)
-                VALUES (?, ?, ?, ?)
-            """, (telegram_id, username, number_phone, int(is_seller)))
+                INSERT INTO users (telegram_id, username, number_phone, is_seller, full_name,
+                                 work_time_start, work_time_end, work_days)
+                VALUES (?, ?, ?, ?, ?, '10:00', '22:00', '1,2,3,4,5,6,7')
+                RETURNING id
+            """, (telegram_id, username, number_phone, int(is_seller), full_name))
+            user_id = self.cursor.fetchone()[0]
             self.connection.commit()
+            return user_id
         except sqlite3.IntegrityError:
-            print("Пользователь с таким telegram_id уже существует.")
+            print(f"Пользователь с telegram_id {telegram_id} уже существует")
+            return None
+        except Exception as e:
+            print(f"Ошибка при добавлении пользователя: {e}")
+            return None
 
-    def delete_user(self, user_id: int) -> None:
-        self.cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        self.connection.commit()
+    def delete_user(self, user_id: int) -> bool:
+        """Удаляет пользователя из базы данных
+        Args:
+            user_id: ID пользователя
+        Returns:
+            True если удаление успешно, False если произошла ошибка
+        """
+        try:
+            self.cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при удалении пользователя: {e}")
+            return False
 
-    def update_user(self, user_id: int, full_name: Optional[str] = None, number_phone: Optional[str] = None) -> None:
+    def update_user(self, user_id: int, **kwargs) -> bool:
+        """Обновляет данные пользователя
+        Args:
+            user_id: ID пользователя
+            **kwargs: Поля для обновления (full_name, number_phone, work_time_start, 
+                     work_time_end, work_days, is_seller)
+        Returns:
+            True если обновление успешно, False если произошла ошибка
+        """
+        valid_fields = {'full_name', 'number_phone', 'work_time_start', 
+                       'work_time_end', 'work_days', 'is_seller'}
         updates = []
         params = []
-        if full_name is not None:
-            updates.append("full_name = ?")
-            params.append(full_name)
-        if number_phone is not None:
-            updates.append("number_phone = ?")
-            params.append(number_phone)
-        params.append(user_id)
-        if updates:
-            self.cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+        
+        for field, value in kwargs.items():
+            if field in valid_fields:
+                updates.append(f"{field} = ?")
+                params.append(value if field != 'is_seller' else int(value))
+                
+        if not updates:
+            return False
+            
+        try:
+            params.append(user_id)
+            query = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
+            self.cursor.execute(query, params)
             self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при обновлении пользователя: {e}")
+            return False
 
-    def get_user(self, user_id: Optional[int] = None, telegram_id: Optional[str] = None, username: Optional[str] = None) -> Optional[Tuple]:
-        if user_id is not None:
-            self.cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-        elif telegram_id is not None:
-            self.cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
-        elif username is not None:
-            self.cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
-        else:
+    def get_user(self, user_id: Optional[int] = None, telegram_id: Optional[str] = None, 
+                 username: Optional[str] = None) -> Optional[Tuple]:
+        """Получает информацию о пользователе
+        Args:
+            user_id: ID пользователя
+            telegram_id: Telegram ID пользователя  
+            username: Username пользователя
+        Returns:
+            Кортеж с данными пользователя или None
+        """
+        try:
+            if user_id is not None:
+                self.cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            elif telegram_id is not None:
+                self.cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+            elif username is not None:
+                self.cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+            else:
+                return None
+            return self.cursor.fetchone()
+        except Exception as e:
+            print(f"Ошибка при получении пользователя: {e}")
             return None
-        return self.cursor.fetchone()
 
     def user_exists(self, user_id: Optional[int] = None, telegram_id: Optional[str] = None) -> bool:
+        """Проверяет существование пользователя
+        Args:
+            user_id: ID пользователя
+            telegram_id: Telegram ID пользователя
+        Returns:
+            True если пользователь существует, False если нет
+        """
         return self.get_user(user_id, telegram_id) is not None
 
     def is_seller(self, user_id: Optional[int] = None, telegram_id: Optional[str] = None) -> bool:
+        """Проверяет является ли пользователь продавцом
+        Args:
+            user_id: ID пользователя
+            telegram_id: Telegram ID пользователя
+        Returns:
+            True если пользователь продавец, False если нет
+        """
         user = self.get_user(user_id, telegram_id)
-        if user:
-            return bool(user[4])
-        return False
+        return bool(user[4]) if user else False
 
-    def set_is_seller(self, is_seller: bool, user_id: Optional[int] = None, telegram_id: Optional[str] = None) -> None:
-        self.cursor.execute("UPDATE users SET is_seller = ? WHERE id = ? OR telegram_id = ?",
-                            (int(is_seller), user_id, telegram_id))
-        self.connection.commit()
+    def set_is_seller(self, is_seller: bool, user_id: Optional[int] = None, 
+                     telegram_id: Optional[str] = None) -> bool:
+        """Устанавливает статус продавца для пользователя
+        Args:
+            is_seller: Новый статус
+            user_id: ID пользователя
+            telegram_id: Telegram ID пользователя
+        Returns:
+            True если обновление успешно, False если произошла ошибка
+        """
+        try:
+            self.cursor.execute(
+                "UPDATE users SET is_seller = ? WHERE id = ? OR telegram_id = ?",
+                (int(is_seller), user_id, telegram_id)
+            )
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при обновлении статуса продавца: {e}")
+            return False
 
     #endregion
 
@@ -159,7 +252,7 @@ class Database:
             default_fields = {
                 "photo": {"type": "image", "label": "Фотография услуги", "required": True, "description": "Загрузите фото услуги"},
                 "adress": {"type": "adress", "label": "Адрес", "required": True, "description": "Укажите адрес оказания услуги"},
-                "number_phone": {"type": "text", "label": "Номер телефона", "required": True, "description": "Укажите номер телефона для связи"},
+                "number_phone": {"type": "text", "label": "Номер телефона", "required": False, "description": "Укажите номер телефона для связи"},
                 "price": {"type": "number", "label": "Стоимость", "required": True, "description": "Укажите стоимость в рублях"},
             }
             

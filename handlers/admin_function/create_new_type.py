@@ -74,7 +74,7 @@ async def start_create_service_type(callback: CallbackQuery, state: FSMContext):
                 "type": "text",
                 "label": "Номер телефона", 
                 "description": "Укажите номер телефона для связи",
-                "required": True
+                "required": False
             },
             "price": {
                 "type": "number",

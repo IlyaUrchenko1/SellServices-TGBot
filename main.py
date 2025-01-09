@@ -10,9 +10,9 @@ from middlewares.check_ban import BanCheckMiddleware
 from middlewares.private_chat import PrivateChatMiddleware
 from middlewares.work_set import WorkSetMiddleware
 from handlers import main_handler
-from handlers.main_function import support_handler, post_handler, watch_handler 
+from handlers.main_function import support_handler, post_handler, watch_handler, profile_handler
 from handlers.admin_function import create_new_type, get_complaints, start_newsletter
-from handlers.main_function.functions import service_profile
+from handlers.main_function.functions import service_profile, create_complaints
 load_dotenv()
 
 default_setting = DefaultBotProperties(parse_mode='HTML')
@@ -29,12 +29,15 @@ async def main():
     dp.include_router(support_handler.router)
     dp.include_router(post_handler.router)
     dp.include_router(watch_handler.router)
+    dp.include_router(profile_handler.router)
+
 
     dp.include_router(create_new_type.router)
     dp.include_router(get_complaints.router)
     dp.include_router(start_newsletter.router)
     
     dp.include_router(service_profile.router)
+    dp.include_router(create_complaints.router)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)

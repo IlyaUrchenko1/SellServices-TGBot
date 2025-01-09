@@ -21,7 +21,6 @@ class FilterStates(StatesGroup):
 
 @router.message(CommandStart())
 async def start_command(message: Message):
-    """Обработка команды /start"""
     telegram_id = str(message.from_user.id)
     user = db.get_user(telegram_id=telegram_id)
     
@@ -40,11 +39,6 @@ async def start_command(message: Message):
             
             db.add_user(telegram_id=telegram_id, username=username)
             user = db.get_user(telegram_id=telegram_id)
-            
-            await message.answer(
-                "✅ Ваш профиль успешно создан!",
-                reply_markup=to_home_keyboard()
-            )
             
         except Exception as e:
             await message.answer(
@@ -117,3 +111,12 @@ async def go_to_home(callback: CallbackQuery, state: FSMContext):
             "❌ Произошла ошибка. Попробуйте еще раз или перезапустите бота командой /start",
             reply_markup=to_home_keyboard()
         )
+
+@router.message(F.text == "/get_id")
+async def get_id(message: Message):
+    """Получение ID чата и пользователя"""
+    await message.answer(
+        f"🆔 ID чата: {message.chat.id}\n"
+        f"👤 ID пользователя: {message.from_user.id}"
+    )
+

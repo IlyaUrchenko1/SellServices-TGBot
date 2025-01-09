@@ -34,7 +34,6 @@ async def support_command(message: Message):
 @router.callback_query(F.data == "ask_a_issue")
 async def ask_to_helper(callback: CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardBuilder()
-    keyboard.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
     keyboard.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="go_to_home"))
     
     await callback.message.edit_text(

@@ -5,7 +5,8 @@ def seller_keyboard() -> ReplyKeyboardMarkup:
     keyboard = ReplyKeyboardBuilder()
     keyboard.add(KeyboardButton(text='👁️ Смотреть объявления'))
     keyboard.row(KeyboardButton(text='📈 Выставить свою услугу'))
-    keyboard.add(KeyboardButton(text='Все мои услуги 📋'))
+    keyboard.add(KeyboardButton(text='📋 Все мои услуги'))
+    keyboard.row(KeyboardButton(text='👤 Профиль'))
     keyboard.row(KeyboardButton(text='👨‍🦰 Поддержка'))
 
     return keyboard.as_markup(resize_keyboard=True)
@@ -20,5 +21,6 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 def user_keyboard() -> ReplyKeyboardMarkup:
     keyboard = ReplyKeyboardBuilder()
     keyboard.add(KeyboardButton(text='👁️ Смотреть объявления'))
+    keyboard.row(KeyboardButton(text='👤 Профиль'))
     keyboard.row(KeyboardButton(text='👨‍🦰 Поддержка'))
     return keyboard.as_markup(resize_keyboard=True)

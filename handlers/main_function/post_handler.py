@@ -66,7 +66,7 @@ def build_service_types_keyboard(page: int = 1) -> Optional[InlineKeyboardMarkup
     
     return keyboard.as_markup()
 
-def create_webapp_form(service_type_id: int) -> Optional[ReplyKeyboardMarkup]:
+def create_webapp_form(service_type_id: int, user_phone: Optional[str] = None) -> Optional[ReplyKeyboardMarkup]:
     """Создает форму веб-приложения для услуги"""
     try:
         service_type = db.get_service_type(service_type_id)
@@ -76,6 +76,9 @@ def create_webapp_form(service_type_id: int) -> Optional[ReplyKeyboardMarkup]:
         fields = {}
         for name, data in service_type["required_fields"].items():
             if name != "photo" and isinstance(data, dict):
+                # Пропускаем поле number_phone если у пользователя есть номер телефона
+                if name == "number_phone" and user_phone:
+                    continue
                 fields[name] = {
                     "type": data.get("type", "text"),
                     "placeholder": data.get("label", name),
@@ -89,6 +92,10 @@ def create_webapp_form(service_type_id: int) -> Optional[ReplyKeyboardMarkup]:
             encoded_placeholder = quote(data["placeholder"])
             param = f"{encoded_name}={encoded_placeholder}"
             field_params.append(param)
+
+        # Если есть номер телефона, добавляем его как параметр
+        if user_phone:
+            field_params.append(f"number_phone={quote(user_phone)}")
 
         base_url = "https://spontaneous-kashata-919d92.netlify.app/create"
         full_url = f"{base_url}?{('&').join(field_params)}"
@@ -154,22 +161,27 @@ async def handle_service_type_selection(callback: CallbackQuery, state: FSMConte
         service_type_id = int(callback.data.split(':')[1])
         await state.update_data(service_type_id=service_type_id)
         
-        keyboard = create_webapp_form(service_type_id)
+        # Получаем номер телефона пользователя из профиля
+        user = db.get_user(telegram_id=str(callback.from_user.id))
+        user_phone = user[3] if user else None  # Индекс 3 соответствует полю number_phone
+        
+        keyboard = create_webapp_form(service_type_id, user_phone)
         if keyboard:
-            await state.set_state(ServiceStates.filling_form)
-            await callback.message.edit_text(
+            await callback.message.delete()
+            await callback.message.answer(
                 "🖥 Нажмите «Заполнить форму» для создания объявления",
                 reply_markup=keyboard
             )
+            await state.set_state(ServiceStates.filling_form)
         else:
             await callback.message.edit_text(
                 "❌ Ошибка получения формы",
-                reply_markup=to_home_keyboard()
+                reply_markup=build_service_types_keyboard()
             )
     except Exception as e:
         await callback.message.edit_text(
-            f"❌ Ошибка выбора категории: {e}",
-            reply_markup=to_home_keyboard()
+            f"❌ Ошибка выбора категории",
+            reply_markup=build_service_types_keyboard()
         )
     finally:
         await callback.answer()
@@ -185,7 +197,7 @@ async def handle_pagination(callback: CallbackQuery):
         else:
             await callback.message.edit_text(
                 "❌ Ошибка загрузки категорий",
-                reply_markup=to_home_keyboard()
+                reply_markup=build_service_types_keyboard()
             )
     except Exception as e:
         print(f"Ошибка пагинации: {e}")
@@ -262,6 +274,11 @@ async def process_service_photo(message: Message, state: FSMContext):
         user = db.get_user(telegram_id=str(message.from_user.id))
         if not user:
             raise ValueError("Пользователь не найден")
+
+        # Если у пользователя есть номер телефона в профиле, используем его
+        user_phone = user[3]  # Индекс 3 соответствует полю number_phone
+        if user_phone and 'number_phone' not in form_data:
+            form_data['number_phone'] = user_phone
 
         address_parts = form_data.get('adress', '').split(',')
         city = address_parts[0].strip().replace('г ', '') if len(address_parts) > 0 else ''
