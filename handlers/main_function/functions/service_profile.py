@@ -1,5 +1,5 @@
 from aiogram import Router, F, types
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Message, InputMediaPhoto
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.fsm.context import FSMContext
@@ -90,7 +90,7 @@ async def start_edit_service(callback: CallbackQuery, state: FSMContext):
         
         keyboard = create_webapp_form_for_edit(service)
         if keyboard:
-            await callback.message.edit_text(
+            await callback.message.answer(
                 "🖥 Выберите действие:\n"
                 "• «Редактировать» - изменить данные услуги\n"
                 "• «Изменить фото» - загрузить новое изображение\n"
@@ -98,10 +98,10 @@ async def start_edit_service(callback: CallbackQuery, state: FSMContext):
                 reply_markup=keyboard
             )
         else:
-            await callback.message.edit_text("❌ Ошибка получения формы")
+            await callback.message.answer("❌ Ошибка получения формы")
             
     except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка редактирования: {e}")
+        await callback.message.answer(f"❌ Ошибка редактирования: {e}")
     finally:
         await callback.answer()
 
@@ -166,13 +166,6 @@ async def process_edit_webapp_data(message: Message, state: FSMContext):
             KeyboardButton(text="🔙 Отмена")
         )
         
-        # Удаляем предыдущее сообщение если есть
-        if last_message_id:
-            try:
-                await message.bot.delete_message(message.chat.id, last_message_id)
-            except:
-                pass
-                
         await message.answer(
             "📸 Отправьте новое фото услуги или нажмите «Пропустить» чтобы оставить текущее",
             reply_markup=keyboard.as_markup(resize_keyboard=True)
@@ -217,22 +210,22 @@ async def process_edit_photo(message: Message, state: FSMContext):
             caption = await format_service_info(updated_service)
             keyboard = await get_service_keyboard(service_id, updated_service['status'], page)
             
-            # Удаляем предыдущие сообщения
-            async for msg in message.chat.history(limit=3):
-                try:
-                    await msg.delete()
-                except:
-                    pass
-                    
             if updated_service.get('photo_id'):
-                await message.answer_photo(
-                    photo=updated_service['photo_id'],
-                    caption=caption,
-                    reply_markup=keyboard
-                )
+                photo_ids = updated_service['photo_id'].split(',')
+                if len(photo_ids) == 1:
+                    await message.answer_photo(
+                        photo=photo_ids[0],
+                        caption=caption,
+                        reply_markup=keyboard
+                    )
+                else:
+                    media = [InputMediaPhoto(media=photo_ids[0], caption=caption)]
+                    media.extend([InputMediaPhoto(media=photo_id) for photo_id in photo_ids[1:]])
+                    await message.answer_media_group(media=media)
+                    await message.answer(text="Управление услугой:", reply_markup=keyboard)
             else:
                 await message.answer(caption, reply_markup=keyboard)
-                
+                        
             await message.answer("✅ Услуга успешно обновлена")
         else:
             raise Exception("Ошибка при обновлении услуги")
@@ -242,10 +235,7 @@ async def process_edit_photo(message: Message, state: FSMContext):
     except ValueError as e:
         await message.answer(f"❌ {str(e)}")
     except Exception as e:
-        await message.answer(
-            "❌ Ошибка обновления услуги\n"
-            "Попробуйте позже или обратитесь в поддержку"
-        )
+        await message.answer("❌ Ошибка обновления услуги\nПопробуйте позже или обратитесь в поддержку")
         print(f"Критическая ошибка: {e}")
 
 async def format_service_info(service: dict) -> str:
@@ -363,17 +353,23 @@ async def show_services(message: types.Message):
 
         total_pages = (len(services) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
         
-                
-        for idx, service in enumerate(services[:ITEMS_PER_PAGE]):
+        for service in services[:ITEMS_PER_PAGE]:
             caption = await format_service_info(service)
             keyboard = await get_service_keyboard(service['id'], service['status'], 0)
             
             if service.get('photo_id'):
-                await message.answer_photo(
-                    photo=service['photo_id'],
-                    caption=caption,
-                    reply_markup=keyboard
-                )
+                photo_ids = service['photo_id'].split(',')
+                if len(photo_ids) == 1:
+                    await message.answer_photo(
+                        photo=photo_ids[0],
+                        caption=caption,
+                        reply_markup=keyboard
+                    )
+                else:
+                    media = [InputMediaPhoto(media=photo_ids[0], caption=caption)]
+                    media.extend([InputMediaPhoto(media=photo_id) for photo_id in photo_ids[1:]])
+                    await message.answer_media_group(media=media)
+                    await message.answer(text="Управление услугой:", reply_markup=keyboard)
             else:
                 await message.answer(caption, reply_markup=keyboard)
 
@@ -409,28 +405,26 @@ async def handle_pagination(callback: CallbackQuery):
         start_idx = page * ITEMS_PER_PAGE
         end_idx = start_idx + ITEMS_PER_PAGE
         
-        # Удаляем все предыдущие сообщения
-        async for msg in callback.message.chat.history(limit=10):
-            try:
-                await msg.delete()
-            except:
-                continue
-        
         for service in services[start_idx:end_idx]:
             caption = await format_service_info(service)
             keyboard = await get_service_keyboard(service['id'], service['status'], page)
             
             if service.get('photo_id'):
                 photo_ids = service['photo_id'].split(',')
-                for photo_id in photo_ids:
+                if len(photo_ids) == 1:
                     await callback.message.answer_photo(
-                        photo=photo_id,
+                        photo=photo_ids[0],
                         caption=caption,
                         reply_markup=keyboard
                     )
+                else:
+                    media = [InputMediaPhoto(media=photo_ids[0], caption=caption)]
+                    media.extend([InputMediaPhoto(media=photo_id) for photo_id in photo_ids[1:]])
+                    await callback.message.answer_media_group(media=media)
+                    await callback.message.answer(text="Управление услугой:", reply_markup=keyboard)
             else:
                 await callback.message.answer(caption, reply_markup=keyboard)
-                
+
         if total_pages > 1:
             nav_markup = await get_navigation_keyboard(page, total_pages)
             await callback.message.answer("Навигация:", reply_markup=nav_markup)
@@ -464,15 +458,21 @@ async def toggle_service_status(callback: CallbackQuery):
             keyboard = await get_service_keyboard(service_id, new_status, page)
             
             if updated_service.get('photo_id'):
-                await callback.message.edit_caption(
-                    caption=caption,
-                    reply_markup=keyboard
-                )
+                photo_ids = updated_service['photo_id'].split(',')
+                if len(photo_ids) == 1:
+                    await callback.message.answer_photo(
+                        photo=photo_ids[0],
+                        caption=caption,
+                        reply_markup=keyboard
+                    )
+                else:
+                    media = [InputMediaPhoto(media=photo_ids[0], caption=caption)]
+                    media.extend([InputMediaPhoto(media=photo_id) for photo_id in photo_ids[1:]])
+                    await callback.message.answer_media_group(media=media)
+                    await callback.message.answer(text="Управление услугой:", reply_markup=keyboard)
             else:
-                await callback.message.edit_text(
-                    text=caption,
-                    reply_markup=keyboard
-                )
+                await callback.message.answer(caption, reply_markup=keyboard)
+                
         else:
             await callback.answer("❌ Ошибка при изменении статуса")
             
@@ -492,7 +492,7 @@ async def delete_service(callback: CallbackQuery):
             InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_delete_{service_id}")
         )
         
-        await callback.message.edit_text(
+        await callback.message.answer(
             "⚠️ Вы уверены, что хотите удалить эту услугу?\n"
             "Это действие нельзя отменить.",
             reply_markup=kb.as_markup()
@@ -509,14 +509,9 @@ async def confirm_delete_service(callback: CallbackQuery):
         service_id = int(callback.data.split("_")[2])
         if db.delete_service(service_id):
             await callback.answer("✅ Услуга успешно удалена")
+            await callback.message.answer("✅ Услуга успешно удалена")
             
-            # Удаляем сообщения и показываем обновленный список
-            async for msg in callback.message.chat.history(limit=10):
-                try:
-                    await msg.delete()
-                except:
-                    continue
-                    
+            # Показываем обновленный список
             await show_services(callback.message)
         else:
             await callback.answer("❌ Ошибка при удалении услуги")
@@ -536,15 +531,21 @@ async def cancel_delete_service(callback: CallbackQuery):
             keyboard = await get_service_keyboard(service_id, service['status'], 0)
             
             if service.get('photo_id'):
-                await callback.message.edit_caption(
-                    caption=caption,
-                    reply_markup=keyboard
-                )
+                photo_ids = service['photo_id'].split(',')
+                if len(photo_ids) == 1:
+                    await callback.message.answer_photo(
+                        photo=photo_ids[0],
+                        caption=caption,
+                        reply_markup=keyboard
+                    )
+                else:
+                    media = [InputMediaPhoto(media=photo_ids[0], caption=caption)]
+                    media.extend([InputMediaPhoto(media=photo_id) for photo_id in photo_ids[1:]])
+                    await callback.message.answer_media_group(media=media)
+                    await callback.message.answer(text="Управление услугой:", reply_markup=keyboard)
             else:
-                await callback.message.edit_text(
-                    text=caption,
-                    reply_markup=keyboard
-                )
+                await callback.message.answer(caption, reply_markup=keyboard)
+            
         await callback.answer("Удаление отменено")
     except Exception as e:
         print(f"Ошибка при отмене удаления: {e}")

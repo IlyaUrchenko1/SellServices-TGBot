@@ -89,7 +89,7 @@ async def open_home(message: Message, state: FSMContext):
         if not user:
             try:
                 await message.edit_text(
-                    "❌ Ошибка получения данных пользователя. Попробуйте перезапустить бота командой /start",
+                    "❌ Ошибка получения данных пользователя. Попробуйте перезапустить бота командой /start\nНикакие данные не будут потеряны",
                     reply_markup=to_home_keyboard()
                 )
             except Exception as e:

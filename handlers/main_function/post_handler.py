@@ -295,22 +295,33 @@ async def process_create_webapp_data(message: Message, state: FSMContext):
 async def process_service_photo_album(message: Message, state: FSMContext):
     """Обработка альбома фотографий услуги"""
     try:
-        # Сохраняем ID первого фото из альбома во временное хранилище
         media_group_id = message.media_group_id
         current_data = await state.get_data()
-        photo_ids = current_data.get('photo_ids', [])
         
+        # Проверяем, не обрабатывали ли мы уже этот альбом
+        if current_data.get('media_group_id') == media_group_id:
+            photo_ids = current_data.get('photo_ids', [])
+        else:
+            # Если это новый альбом, очищаем предыдущие фото
+            photo_ids = []
+            await state.update_data(media_group_id=media_group_id)
+            
         if message.photo:
             photo_ids.append(message.photo[-1].file_id)
-            await state.update_data(photo_ids=photo_ids, media_group_id=media_group_id)
+            await state.update_data(photo_ids=photo_ids)
             
-        # Ждем небольшую паузу, чтобы собрать все фото из альбома
-        await asyncio.sleep(1)
+        # Ждем небольшую паузу для сбора всех фото
+        await asyncio.sleep(0.5)
         
-        # Проверяем, все ли фото собраны
-        updated_data = await state.get_data()
-        if len(updated_data.get('photo_ids', [])) >= 1:
+        # Проверяем количество собранных фото
+        if len(photo_ids) >= 10:
             await process_service_data(message, state)
+        elif len(photo_ids) >= 1:
+            # Ждем еще немного, возможно есть еще фото
+            await asyncio.sleep(1)
+            final_data = await state.get_data()
+            if len(final_data.get('photo_ids', [])) == len(photo_ids):
+                await process_service_data(message, state)
 
     except Exception as e:
         print(f"Ошибка обработки альбома: {e}")

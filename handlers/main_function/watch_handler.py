@@ -1,7 +1,8 @@
 from aiogram import Router, F, types
 from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
-    WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Message
+    WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Message,
+    InputMediaPhoto
 )
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -289,19 +290,35 @@ async def show_service_details(callback: CallbackQuery, state: FSMContext):
         details += "\n━━━━━━━━━━━━━━━━━━━━━"
 
         await state.set_state(SearchStates.viewing_service)
+        
+        # Сохраняем ID сообщений для последующего удаления
+        sent_messages = []
+        
+        # Удаляем предыдущее сообщение
         await callback.message.delete()
         
+        # Если есть фотографии
         if service_dict['photo_id']:
-            await callback.message.answer_photo(
-                photo=service_dict['photo_id'],
-                caption=details,
-                reply_markup=create_service_details_keyboard(service_dict, seller_username)
-            )
-        else:
-            await callback.message.answer(
-                details,
-                reply_markup=create_service_details_keyboard(service_dict, seller_username)
-            )
+            photo_ids = service_dict['photo_id'].split(',') if ',' in service_dict['photo_id'] else [service_dict['photo_id']]
+            
+            # Отправляем альбом фотографий
+            media_group = []
+            for photo_id in photo_ids:
+                media_group.append(InputMediaPhoto(media=photo_id))
+                
+            if media_group:
+                photos_messages = await callback.message.answer_media_group(media=media_group)
+                sent_messages.extend([msg.message_id for msg in photos_messages])
+        
+        # Отправляем описание с кнопками
+        details_message = await callback.message.answer(
+            details,
+            reply_markup=create_service_details_keyboard(service_dict, seller_username)
+        )
+        sent_messages.append(details_message.message_id)
+        
+        # Сохраняем ID сообщений в состоянии
+        await state.update_data(service_messages=sent_messages)
 
     except Exception as e:
         print(f"Ошибка при показе деталей услуги: {e}")
@@ -674,12 +691,22 @@ async def back_to_services(callback: CallbackQuery, state: FSMContext):
     try:
         state_data = await state.get_data()
         services = state_data.get('services', [])
+        service_messages = state_data.get('service_messages', [])
+        
+        # Удаляем предыдущие сообщения с фото
+        for message_id in service_messages:
+            try:
+                await callback.bot.delete_message(
+                    chat_id=callback.message.chat.id,
+                    message_id=message_id
+                )
+            except Exception as e:
+                print(f"Ошибка при удалении сообщения {message_id}: {e}")
         
         if services:
             await state.set_state(SearchStates.browsing)
             keyboard = create_services_keyboard(services)
             
-            await callback.message.delete()
             await callback.message.answer(
                 f"📋 Найдено услуг: {len(services)}\n"
                 "Используйте кнопку «🔍 Настроить фильтры» для уточнения поиска",
