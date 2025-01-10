@@ -8,6 +8,7 @@ from utils.database import Database
 from urllib.parse import quote
 import json
 from typing import List, Tuple, Dict, Any, Optional
+from handlers.main_function.post_handler import to_home_keyboard
 
 
 router = Router(name='service_profile')
@@ -316,9 +317,7 @@ async def get_service_keyboard(service_id: int, status: str, page: int) -> Inlin
     
     for text, callback_data in buttons:
         kb.row(InlineKeyboardButton(text=text, callback_data=callback_data))
-        
-    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"services_page_{page}"))
-        
+
     return kb.as_markup()
 
 async def get_navigation_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
@@ -335,17 +334,19 @@ async def get_navigation_keyboard(page: int, total_pages: int) -> InlineKeyboard
         buttons.append(("➡️", f"services_page_{page+1}"))
         
     kb.row(*[InlineKeyboardButton(text=text, callback_data=data) for text, data in buttons])
-    kb.row(InlineKeyboardButton(text="🏠 На главную", callback_data="go_to_home"))
     
     return kb.as_markup()
 
-@router.message(F.text.in_(["Все мои услуги 📋", "my_services"]))
+@router.message(F.text.in_(["📋 Все мои услуги", "my_services"]))
 async def show_services(message: types.Message):
     """Показывает список услуг пользователя"""
     try:
         user = db.get_user(telegram_id=str(message.from_user.id))
-        if not user:
-            await message.answer("❌ Вы не зарегистрированы в системе")
+        if not user or not user[4]:  # user[4] - поле is_seller
+            await message.answer(
+                "❌ Для просмотра услуг необходимо быть продавцом",
+                reply_markup=to_home_keyboard()
+            )
             return
 
         services = db.get_services(user_id=user[1])
@@ -420,11 +421,13 @@ async def handle_pagination(callback: CallbackQuery):
             keyboard = await get_service_keyboard(service['id'], service['status'], page)
             
             if service.get('photo_id'):
-                await callback.message.answer_photo(
-                    photo=service['photo_id'],
-                    caption=caption,
-                    reply_markup=keyboard
-                )
+                photo_ids = service['photo_id'].split(',')
+                for photo_id in photo_ids:
+                    await callback.message.answer_photo(
+                        photo=photo_id,
+                        caption=caption,
+                        reply_markup=keyboard
+                    )
             else:
                 await callback.message.answer(caption, reply_markup=keyboard)
                 

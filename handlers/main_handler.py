@@ -3,7 +3,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
-
+from typing import Optional
 from keyboards.main_keyboards import to_home_keyboard
 from keyboards.role_keyboards import seller_keyboard, user_keyboard, admin_keyboard
 
@@ -26,18 +26,7 @@ async def start_command(message: Message):
     
     if not user:
         try:
-            username = message.from_user.username
-            if not username:
-                import random
-                adjectives = ["Epic", "Ninja", "Cool", "Super", "Mega", "Ultra", "Awesome", "Magic", "Cosmic", "Wild"]
-                nouns = ["Unicorn", "Wizard", "Warrior", "Dragon", "Phoenix", "Tiger", "Panda", "Rocket", "Hero"]
-                while True:
-                    random_number = random.randint(100, 999)
-                    username = f"{random.choice(adjectives)}{random.choice(nouns)}{random_number}"
-                    if not db.get_user(username=username):
-                        break
-            
-            db.add_user(telegram_id=telegram_id, username=username)
+            db.add_user(telegram_id=telegram_id, username=message.from_user.username)
             user = db.get_user(telegram_id=telegram_id)
             
         except Exception as e:
@@ -59,7 +48,7 @@ async def start_command(message: Message):
             reply_markup=admin_keyboard()
         )
 
-async def show_main_menu(message: Message, user) -> None:
+async def show_main_menu(message: Message, user, name: Optional[str] = None) -> None:
     """Показывает главное меню в зависимости от роли пользователя"""
     if not user:
         keyboard = user_keyboard()
@@ -68,7 +57,10 @@ async def show_main_menu(message: Message, user) -> None:
     else:
         keyboard = user_keyboard()
 
-    welcome_text = f"👋 Здравствуйте, {message.from_user.first_name}!\n\n"
+    if name:
+        welcome_text = f"👋 Здравствуйте, {name}!\n\n"
+    else:
+        welcome_text = f"👋 Здравствуйте, {message.from_user.first_name}!\n\n"
     
     try:
         await message.answer(welcome_text, reply_markup=keyboard)
@@ -82,22 +74,35 @@ async def show_main_menu(message: Message, user) -> None:
 @router.callback_query(F.data == "go_to_home")
 async def go_to_home(callback: CallbackQuery, state: FSMContext):
     """Обработчик возврата в главное меню"""
+    await open_home(callback.message, state)
+    
+@router.message(F.text.in_(["Вернуться домой 🏠"]))
+async def go_to_home_reply(message: Message, state: FSMContext):
+    await open_home(message, state)
+
+
+async def open_home(message: Message, state: FSMContext):
     try:
         await state.clear()
-        await callback.answer("🏠 Возвращаемся в главное меню")
         
-        user = db.get_user(telegram_id=str(callback.from_user.id))
+        user = db.get_user(telegram_id=str(message.from_user.id))
         if not user:
-            await callback.message.edit_text(
-                "❌ Ошибка получения данных пользователя. Попробуйте перезапустить бота командой /start",
-                reply_markup=to_home_keyboard()
-            )
+            try:
+                await message.edit_text(
+                    "❌ Ошибка получения данных пользователя. Попробуйте перезапустить бота командой /start",
+                    reply_markup=to_home_keyboard()
+                )
+            except Exception as e:
+                await message.answer(
+                    "❌ Произошла ошибка при отображении меню. Попробуйте еще раз.",
+                    reply_markup=to_home_keyboard()
+                )
             return
             
-        await show_main_menu(callback.message, user)
+        await show_main_menu(message, user, name=message.from_user.first_name)
         
-        if callback.from_user.id in ADMIN_IDS:
-            await callback.message.answer(
+        if message.from_user.id in ADMIN_IDS:
+            await message.answer(
                 "🌟 Панель администратора доступна:\n"
                 "- Рассылка сообщений\n"
                 "- Просмотр жалоб\n"
@@ -107,7 +112,7 @@ async def go_to_home(callback: CallbackQuery, state: FSMContext):
             
     except Exception as e:
         print(f"Ошибка в go_to_home: {e}")
-        await callback.message.edit_text(
+        await message.edit_text(
             "❌ Произошла ошибка. Попробуйте еще раз или перезапустите бота командой /start",
             reply_markup=to_home_keyboard()
         )

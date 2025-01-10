@@ -13,6 +13,7 @@ from handlers import main_handler
 from handlers.main_function import support_handler, post_handler, watch_handler, profile_handler
 from handlers.admin_function import create_new_type, get_complaints, start_newsletter
 from handlers.main_function.functions import service_profile, create_complaints
+
 load_dotenv()
 
 default_setting = DefaultBotProperties(parse_mode='HTML')
@@ -53,3 +54,5 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот остановлен :(")
+    except Exception as e:
+        print(f"Произошла ошибка: {e}")

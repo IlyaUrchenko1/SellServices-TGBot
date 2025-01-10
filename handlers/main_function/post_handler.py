@@ -9,6 +9,7 @@ from keyboards.role_keyboards import seller_keyboard
 from keyboards.main_keyboards import to_home_keyboard
 from urllib.parse import quote, unquote
 from typing import Dict, Any, Optional
+import asyncio
 
 router = Router(name='post_handler')
 db = Database()
@@ -30,12 +31,12 @@ def create_pagination_keyboard(total_items: int, current_page: int) -> InlineKey
     if current_page > 1:
         row_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{current_page-1}"))
     
-    row_buttons.append(InlineKeyboardButton(text=f"{current_page}/{total_pages}", callback_data="current_page"))
-    
     if current_page < total_pages:
         row_buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{current_page+1}"))
     
-    keyboard.row(*row_buttons)
+    if row_buttons:
+        keyboard.row(*row_buttons)
+        
     keyboard.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="go_to_home"))
     
     return keyboard.as_markup()
@@ -60,59 +61,76 @@ def build_service_types_keyboard(page: int = 1) -> Optional[InlineKeyboardMarkup
             ))
         keyboard.row(*row_buttons)
     
-    keyboard.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu"))
     pagination = create_pagination_keyboard(len(service_types), page)
     keyboard.attach(InlineKeyboardBuilder.from_markup(pagination))
     
     return keyboard.as_markup()
 
-def create_webapp_form(service_type_id: int, user_phone: Optional[str] = None) -> Optional[ReplyKeyboardMarkup]:
+def create_webapp_form(service_type_id: int, need_enter_phone: Optional[bool] = True) -> Optional[ReplyKeyboardMarkup]:
     """Создает форму веб-приложения для услуги"""
     try:
+        # Проверяем входные данные
+        if not isinstance(service_type_id, int) or service_type_id <= 0:
+            raise ValueError("Некорректный ID типа услуги")
+
+        # Получаем тип услуги из БД
         service_type = db.get_service_type(service_type_id)
-        if not service_type or "required_fields" not in service_type:
-            return None
+        if not service_type:
+            raise ValueError("Тип услуги не найден")
             
+        required_fields = service_type.get("required_fields")
+        if not required_fields or not isinstance(required_fields, dict):
+            raise ValueError("Некорректная структура полей формы")
+
+        # Формируем поля формы с учетом need_enter_phone
         fields = {}
-        for name, data in service_type["required_fields"].items():
-            if name != "photo" and isinstance(data, dict):
-                # Пропускаем поле number_phone если у пользователя есть номер телефона
-                if name == "number_phone" and user_phone:
-                    continue
-                fields[name] = {
-                    "type": data.get("type", "text"),
-                    "placeholder": data.get("label", name),
-                    "description": data.get("description", ""),
-                    "required": data.get("required", True)
-                }
+        for name, data in required_fields.items():
+            if not isinstance(data, dict) or name == "photo":
+                continue
+                
+            if name == "number_phone" and not need_enter_phone:
+                continue
+                
+            fields[name] = data.get("label", name)
 
+        # Формируем параметры URL безопасным способом
         field_params = []
-        for name, data in fields.items():
-            encoded_name = quote(name)
-            encoded_placeholder = quote(data["placeholder"])
-            param = f"{encoded_name}={encoded_placeholder}"
-            field_params.append(param)
+        for name, placeholder in fields.items():
+            try:
+                if name and placeholder:
+                    encoded_name = quote(str(name).strip())
+                    encoded_placeholder = quote(str(placeholder).strip())
+                    if encoded_name and encoded_placeholder:
+                        field_params.append(f"{encoded_name}={encoded_placeholder}")
+            except (TypeError, ValueError) as e:
+                print(f"Ошибка кодирования параметра {name}: {e}")
+                continue
 
-        # Если есть номер телефона, добавляем его как параметр
-        if user_phone:
-            field_params.append(f"number_phone={quote(user_phone)}")
-
+        # Формируем URL
         base_url = "https://spontaneous-kashata-919d92.netlify.app/create"
-        full_url = f"{base_url}?{('&').join(field_params)}"
-        
+        full_url = f"{base_url}?{('&').join(field_params)}" if field_params else base_url
+
+        # Создаем клавиатуру с обновленными параметрами WebAppInfo
         keyboard = ReplyKeyboardBuilder()
         keyboard.row(
             KeyboardButton(
-                text="📝 Заполнить форму", 
-                web_app=WebAppInfo(url=full_url)
+                text="📝 Заполнить форму",
+                web_app=WebAppInfo(
+                    url=full_url
+                )
             )
         )
-        keyboard.row(KeyboardButton(text="🔙 Назад"))
-        
-        return keyboard.as_markup(resize_keyboard=True)
-        
+        keyboard.row(KeyboardButton(text="Вернуться домой 🏠"))
+
+        return keyboard.as_markup(
+            resize_keyboard=True,
+            one_time_keyboard=False,
+            is_persistent=True,
+            input_field_placeholder="Нажмите кнопку для заполнения формы"
+        )
+
     except Exception as e:
-        print(f"Ошибка создания формы: {e}")
+        print(f"Ошибка создания формы: {str(e)}")
         return None
 
 def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Any]) -> Optional[str]:
@@ -131,14 +149,29 @@ def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Any]) ->
                         float(data[field])
                     except ValueError:
                         return f"Поле {field_data.get('label', field)} должно быть числом"
+
+                if field == "adress" and not data[field].count(',') == 2:
+                    return "Адрес должен содержать город, улицу и дом через запятую"
+
+                if field == "district" and not data[field].count(',') == 1:
+                    return "Район должен содержать город и район через запятую"
                         
         return None
     except Exception as e:
         return f"Ошибка валидации: {str(e)}"
 
-@router.message(lambda m: m.text == '📈 Выставить свою услугу' or m.text == '/add_service')
+@router.message(F.text.in_(["📈 Выставить свою услугу", "/add_service"]))
 async def start_post_service(message: Message, state: FSMContext):
     """Начало публикации услуги"""
+    # Проверяем является ли пользователь продавцом
+    user = db.get_user(telegram_id=str(message.from_user.id))
+    if not user or not user[4]:  # user[4] - поле is_seller
+        await message.answer(
+            "❌ Для публикации услуг необходимо быть продавцом",
+            reply_markup=to_home_keyboard()
+        )
+        return
+
     keyboard = build_service_types_keyboard()
     if not keyboard:
         await message.answer(
@@ -146,7 +179,7 @@ async def start_post_service(message: Message, state: FSMContext):
             reply_markup=to_home_keyboard()
         )
         return
-        
+
     await state.set_state(ServiceStates.selecting_type)
     await message.answer(
         "📋 Выберите категорию услуги:\n"
@@ -161,11 +194,12 @@ async def handle_service_type_selection(callback: CallbackQuery, state: FSMConte
         service_type_id = int(callback.data.split(':')[1])
         await state.update_data(service_type_id=service_type_id)
         
-        # Получаем номер телефона пользователя из профиля
         user = db.get_user(telegram_id=str(callback.from_user.id))
-        user_phone = user[3] if user else None  # Индекс 3 соответствует полю number_phone
+        if user[3]:
+            keyboard = create_webapp_form(service_type_id, need_enter_phone=False)
+        else:
+            keyboard = create_webapp_form(service_type_id)
         
-        keyboard = create_webapp_form(service_type_id, user_phone)
         if keyboard:
             await callback.message.delete()
             await callback.message.answer(
@@ -231,7 +265,8 @@ async def process_create_webapp_data(message: Message, state: FSMContext):
         
         await message.answer(
             "📸 Отправьте фото услуги\n"
-            "- Фото должно быть качественным\n"
+            "- Можно отправить одно фото или альбом до 10 фото\n"
+            "- Фото должны быть качественными\n"
             "- Наглядно показывать услугу",
             reply_markup=keyboard.as_markup(resize_keyboard=True)
         )
@@ -256,15 +291,62 @@ async def process_create_webapp_data(message: Message, state: FSMContext):
         )
         await state.clear()
 
+@router.message(ServiceStates.waiting_for_photo, F.media_group_id)
+async def process_service_photo_album(message: Message, state: FSMContext):
+    """Обработка альбома фотографий услуги"""
+    try:
+        # Сохраняем ID первого фото из альбома во временное хранилище
+        media_group_id = message.media_group_id
+        current_data = await state.get_data()
+        photo_ids = current_data.get('photo_ids', [])
+        
+        if message.photo:
+            photo_ids.append(message.photo[-1].file_id)
+            await state.update_data(photo_ids=photo_ids, media_group_id=media_group_id)
+            
+        # Ждем небольшую паузу, чтобы собрать все фото из альбома
+        await asyncio.sleep(1)
+        
+        # Проверяем, все ли фото собраны
+        updated_data = await state.get_data()
+        if len(updated_data.get('photo_ids', [])) >= 1:
+            await process_service_data(message, state)
+
+    except Exception as e:
+        print(f"Ошибка обработки альбома: {e}")
+        await message.answer(
+            "❌ Ошибка при обработке фотографий\n"
+            "Попробуйте загрузить фото по одному",
+            reply_markup=to_home_keyboard()
+        )
+        await state.clear()
+
 @router.message(ServiceStates.waiting_for_photo, F.photo)
 async def process_service_photo(message: Message, state: FSMContext):
-    """Обработка фото услуги"""
+    """Обработка одиночного фото услуги"""
+    try:
+        if not message.media_group_id:
+            # Если это одиночное фото
+            await state.update_data(photo_ids=[message.photo[-1].file_id])
+            await process_service_data(message, state)
+            
+    except Exception as e:
+        print(f"Ошибка обработки фото: {e}")
+        await message.answer(
+            "❌ Ошибка при обработке фотографии",
+            reply_markup=to_home_keyboard()
+        )
+        await state.clear()
+
+async def process_service_data(message: Message, state: FSMContext):
+    """Обработка данных услуги и сохранение в БД"""
     try:
         data = await state.get_data()
         form_data = data.get('form_data')
         service_type_id = data.get('service_type_id')
+        photo_ids = data.get('photo_ids', [])
 
-        if not all([form_data, service_type_id]):
+        if not all([form_data, service_type_id, photo_ids]):
             raise ValueError("Отсутствуют необходимые данные формы")
 
         service_type = db.get_service_type(service_type_id)
@@ -275,30 +357,31 @@ async def process_service_photo(message: Message, state: FSMContext):
         if not user:
             raise ValueError("Пользователь не найден")
 
-        # Если у пользователя есть номер телефона в профиле, используем его
-        user_phone = user[3]  # Индекс 3 соответствует полю number_phone
+        user_phone = user[3]
         if user_phone and 'number_phone' not in form_data:
             form_data['number_phone'] = user_phone
 
         address_parts = form_data.get('adress', '').split(',')
-        city = address_parts[0].strip().replace('г ', '') if len(address_parts) > 0 else ''
-        street = address_parts[1].strip().replace('ул ', '') if len(address_parts) > 1 else ''
-        house = address_parts[2].strip().replace('д ', '') if len(address_parts) > 2 else ''
+        city = address_parts[0].strip() if len(address_parts) > 0 else ''
+        street = address_parts[1].strip() if len(address_parts) > 1 else ''
+        house = address_parts[2].strip() if len(address_parts) > 2 else ''
+
+        district_parts = form_data.get('district', '').split(',')
+        district = district_parts[1].strip() if len(district_parts) > 1 else ''
 
         service_data = {
             "user_id": user[1],
             "service_type_id": service_type_id,
             "title": form_data.get('title', service_type["name"]),
-            "photo_id": message.photo[-1].file_id,
+            "photo_id": ','.join(photo_ids),  # Сохраняем все ID фото через запятую
             "city": city,
-            "district": form_data.get('district', '').strip(),
+            "district": district,
             "street": street,
             "house": house,
-            "number_phone": form_data.get('number_phone', '').strip(),
+            "number_phone": form_data.get('number_phone', ''),
             "price": float(form_data.get('price', 0)),
             "custom_fields": {
-                k: v.strip() if isinstance(v, str) else v
-                for k, v in form_data.items() 
+                k: v for k, v in form_data.items() 
                 if k not in ['title', 'city', 'district', 'street', 'price', 'number_phone', 'adress']
             }
         }

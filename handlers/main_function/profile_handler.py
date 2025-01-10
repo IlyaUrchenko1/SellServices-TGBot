@@ -1,14 +1,10 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import re
-from datetime import datetime, time
 from typing import Optional
 from utils.database import Database
-from keyboards.role_keyboards import seller_keyboard, user_keyboard
 
 router = Router()
 db = Database()
@@ -19,7 +15,7 @@ class ProfileStates(StatesGroup):
     waiting_for_work_time = State()
     waiting_for_work_days = State()
 
-@router.message(F.text == "👤 Профиль")
+@router.message(F.text.in_(["👤 Профиль", "/profile"]))
 async def show_profile(message: Message, telegram_id: Optional[int] = None):
     """Показывает профиль пользователя"""
     if telegram_id is None:
@@ -40,7 +36,7 @@ async def show_profile(message: Message, telegram_id: Optional[int] = None):
     # Если пользователь продавец, получаем его активные услуги
     active_services_count = 0
     if is_seller:
-        services = db.get_services(user_id=user_id, status='active')
+        services = db.get_services(user_id=message.from_user.id)
         active_services_count = len(services) if services else 0
     
     # Форматируем рабочие дни
@@ -269,4 +265,101 @@ async def save_work_days(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Произошла ошибка при обновлении рабочих дней")
         await state.clear()
 
-# Оставляем существующие обработчики для телефона и имени без изменений
+@router.callback_query(F.data.in_(["add_phone", "change_phone"]))
+async def request_phone(callback: CallbackQuery, state: FSMContext):
+    """Запрос на добавление/изменение номера телефона"""
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 Отмена", callback_data="cancel_input")
+    
+    await state.set_state(ProfileStates.waiting_for_phone)
+    await callback.message.edit_text(
+        "📱 Введите номер телефона в формате +7XXXXXXXXXX:",
+        reply_markup=keyboard.as_markup()
+    )
+
+@router.message(ProfileStates.waiting_for_phone)
+async def process_phone(message: Message, state: FSMContext):
+    """Обработка ввода номера телефона"""
+    phone = message.text.strip()
+    
+    # Простая валидация номера телефона
+    if not (phone.startswith('+7') and len(phone) == 12 and phone[1:].isdigit()):
+        await message.answer(
+            "❌ Неверный формат номера телефона. Пожалуйста, используйте формат +7XXXXXXXXXX"
+        )
+        return
+        
+    try:
+        user = db.get_user(telegram_id=str(message.from_user.id))
+        if not user:
+            raise Exception("Пользователь не найден")
+            
+        # Обновляем телефон в БД
+        db.update_user(
+            user_id=user[0],
+            number_phone=phone
+        )
+        
+        await state.clear()
+        await message.answer("✅ Номер телефона успешно обновлен!")
+        
+        # Отправляем новое сообщение с обновленным профилем
+        await show_profile(message, message.from_user.id)
+        
+    except Exception as e:
+        print(f"Ошибка при обновлении номера телефона: {e}")
+        await message.answer("❌ Произошла ошибка при обновлении номера телефона")
+        await state.clear()
+
+@router.callback_query(F.data.in_(["add_name", "change_name"]))
+async def request_name(callback: CallbackQuery, state: FSMContext):
+    """Запрос на добавление/изменение имени"""
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 Отмена", callback_data="cancel_input")
+    
+    await state.set_state(ProfileStates.waiting_for_name)
+    await callback.message.edit_text(
+        "👤 Введите ваше полное имя:",
+        reply_markup=keyboard.as_markup()
+    )
+
+@router.message(ProfileStates.waiting_for_name)
+async def process_name(message: Message, state: FSMContext):
+    """Обработка ввода имени"""
+    name = message.text.strip()
+    
+    # Простая валидация имени
+    if len(name) < 2 or len(name) > 50:
+        await message.answer(
+            "❌ Имя должно содержать от 2 до 50 символов"
+        )
+        return
+        
+    try:
+        user = db.get_user(telegram_id=str(message.from_user.id))
+        if not user:
+            raise Exception("Пользователь не найден")
+            
+        # Обновляем имя в БД
+        db.update_user(
+            user_id=user[0],
+            full_name=name
+        )
+        
+        await state.clear()
+        await message.answer("✅ Имя успешно обновлено!")
+        
+        # Отправляем новое сообщение с обновленным профилем
+        await show_profile(message, message.from_user.id)
+        
+    except Exception as e:
+        print(f"Ошибка при обновлении имени: {e}")
+        await message.answer("❌ Произошла ошибка при обновлении имени")
+        await state.clear()
+
+@router.callback_query(F.data == "cancel_input")
+async def cancel_input(callback: CallbackQuery, state: FSMContext):
+    """Отмена ввода данных"""
+    await state.clear()
+    await callback.message.edit_text("❌ Действие отменено")
+    await show_profile(callback.message, callback.from_user.id)

@@ -70,6 +70,12 @@ async def start_create_service_type(callback: CallbackQuery, state: FSMContext):
                 "description": "Укажите адрес оказания услуги",
                 "required": True
             },
+            "district": {
+                "type": "text",
+                "label": "Район",
+                "description": "Укажите район оказания услуги",
+                "required": True
+            },
             "number_phone": {
                 "type": "text",
                 "label": "Номер телефона", 

@@ -11,7 +11,7 @@ from utils.database import Database
 from urllib.parse import quote
 import json
 from typing import List, Dict, Any, Optional
-from handlers.main_function.functions.create_complaints import create_complaint
+from handlers.main_function.functions.create_complaints import ComplaintStates, create_complaint
 
 router = Router(name='watch_handler')
 db = Database()
@@ -27,8 +27,7 @@ def build_service_types_keyboard(page: int = 1) -> Optional[InlineKeyboardMarkup
     """Создает клавиатуру с типами услуг"""
     service_types = db.get_active_service_types()
     if not service_types:
-        print("Нет доступных типов услуг")
-        return None
+        return
         
     keyboard = InlineKeyboardBuilder()
     
@@ -104,18 +103,15 @@ def create_services_keyboard(services: List[Dict], page: int = 1, type_id: Optio
     
     return keyboard.as_markup()
 
-def create_service_details_keyboard(service_id: int, phone_clicked: bool = False) -> InlineKeyboardMarkup:
+def create_service_details_keyboard(service: Dict, seller_username: str) -> InlineKeyboardMarkup:
     """Создает клавиатуру для детального просмотра услуги"""
     keyboard = InlineKeyboardBuilder()
     
     keyboard.row(
-        InlineKeyboardButton(text="📞 Позвонить", callback_data=f"call_{service_id}"),
-        InlineKeyboardButton(text="⚠️ Жалоба", callback_data=f"create_complaint_service_{service_id}")
+        InlineKeyboardButton(text="📞 Показать телефон", callback_data=f"call_{service['id']}"),
+        InlineKeyboardButton(text="⚠️ Жалоба на услугу", callback_data=f"create_complaint_service_{seller_username}")
     )
     
-    if phone_clicked:
-        keyboard.row(InlineKeyboardButton(text="🔒 Забронировать", callback_data=f"book_{service_id}"))
-        
     keyboard.row(InlineKeyboardButton(text="🔙 К списку", callback_data="back_to_services"))
     
     return keyboard.as_markup()
@@ -168,22 +164,21 @@ def create_filter_webapp_keyboard() -> ReplyKeyboardMarkup:
                 web_app=WebAppInfo(url=base_url)
             )
         )
-        keyboard.row(KeyboardButton(text="🔙 Назад"))
+        keyboard.row(KeyboardButton(text="Вернуться домой 🏠"))
         
-        return keyboard.as_markup(resize_keyboard=True)
+        return keyboard.as_markup(resize_keyboard=True, one_time_keyboard=False)
 
     except Exception as e:
         print(f"Ошибка создания формы фильтров: {e}")
         return None
 
-@router.message(lambda m: m.text == "👁️ Смотреть объявления" or m.text == "/search")
+@router.message(F.text.in_(["👁️ Смотреть услуги", "/search"]))
 async def start_search(message: Message, state: FSMContext):
     """Начало поиска услуг"""
     keyboard = build_service_types_keyboard()
     if not keyboard:
         await message.answer(
-            "❌ В данный момент нет доступных категорий услуг",
-            reply_markup=types.ReplyKeyboardRemove()
+            "❌ В данный момент нет доступных категорий услуг"
         )
         return
 
@@ -239,46 +234,73 @@ async def show_service_details(callback: CallbackQuery, state: FSMContext):
     """Показывает детальную информацию об услуге"""
     try:
         service_id = int(callback.data.split(':')[1])
-        state_data = await state.get_data()
-        services = state_data.get('services', [])
+        service = db.get_service_by_id(service_id)
         
-        service = next((s for s in services if s['id'] == service_id), None)
         if not service:
-            print(f"Услуга {service_id} не найдена в списке")
             await callback.answer("❌ Услуга не найдена")
             return
 
+        # Преобразуем кортеж в словарь для удобства
+        service_dict = {
+            'id': service[0],
+            'user_id': service[1],
+            'service_type_id': service[2],
+            'title': service[3],
+            'photo_id': service[4],
+            'city': service[5],
+            'district': service[6],
+            'street': service[7],
+            'house': service[8],
+            'number_phone': service[9],
+            'price': service[10],
+            'custom_fields': service[11]
+        }
+
+        # Получаем информацию о продавце
+        seller = db.get_user(telegram_id=service_dict['user_id'])
+        if not seller:
+            await callback.answer("❌ Информация о продавце недоступна")
+            return
+
+        seller_username = seller[2]  # username из кортежа пользователя
+        
         db.increment_service_views(service_id)
         
         details = (
-            f"🔍 {service['title']}\n\n"
-            f"💰 Цена: {service['price']}₽\n"
-            f"📍 Адрес: {service['city']}, {service['district']}\n"
-            f"   {service['street']}, {service['house']}\n"
+            f"🎯 {service_dict['title']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Стоимость: {service_dict['price']}₽\n\n"
+            f"📍 Местоположение:\n"
+            f"• Город: {service_dict['city']}\n"
+            f"• Район: {service_dict['district']}\n" 
+            f"• Улица: {service_dict['street']}\n\n"
         )
 
-        if service.get('custom_fields'):
+        if service_dict['custom_fields']:
             try:
-                custom_fields = service['custom_fields'] if isinstance(service['custom_fields'], dict) else json.loads(service['custom_fields'])
+                custom_fields = json.loads(service_dict['custom_fields']) if isinstance(service_dict['custom_fields'], str) else service_dict['custom_fields']
+                details += "📋 Дополнительная информация:\n"
                 for field, value in custom_fields.items():
                     if field not in ['photo', 'adress', 'number_phone', 'price']:
-                        details += f"📌 {field}: {value}\n"
+                        details += f"• {field}: {value}\n"
             except json.JSONDecodeError as e:
                 print(f"Ошибка при разборе custom_fields: {e}")
+
+        details += "\n━━━━━━━━━━━━━━━━━━━━━"
 
         await state.set_state(SearchStates.viewing_service)
         await callback.message.delete()
         
-        if service.get('photo_id'):
+        if service_dict['photo_id']:
             await callback.message.answer_photo(
-                photo=service['photo_id'],
+                photo=service_dict['photo_id'],
                 caption=details,
-                reply_markup=create_service_details_keyboard(service_id)
+                reply_markup=create_service_details_keyboard(service_dict, seller_username)
             )
         else:
             await callback.message.answer(
                 details,
-                reply_markup=create_service_details_keyboard(service_id)
+                reply_markup=create_service_details_keyboard(service_dict, seller_username)
             )
 
     except Exception as e:
@@ -286,6 +308,11 @@ async def show_service_details(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка при загрузке информации")
     finally:
         await callback.answer()
+
+@router.callback_query(lambda c: c.data.startswith("create_complaint_"))
+async def handle_complaint_button(callback: CallbackQuery, state: FSMContext):
+    """Обработка создания жалобы"""
+    await create_complaint(callback, state)
 
 @router.callback_query(lambda c: c.data == "reset_filters")
 async def reset_filters(callback: CallbackQuery, state: FSMContext):
@@ -518,7 +545,7 @@ async def process_filter_webapp_data(message: Message, state: FSMContext):
 
 @router.callback_query(lambda c: c.data.startswith('call_'))
 async def handle_call_button(callback: CallbackQuery, state: FSMContext):
-    """Обработка нажатия кнопки позвонить"""
+    """Обработка нажатия кнопки показать телефон"""
     try:
         service_id = int(callback.data.split('_')[1])
         service = db.get_service_by_id(service_id)
@@ -529,18 +556,32 @@ async def handle_call_button(callback: CallbackQuery, state: FSMContext):
             return
             
         number_phone = service[9]  # Индекс номера телефона в кортеже
+        seller = db.get_user(telegram_id=service[1])
         
-        await callback.message.edit_reply_markup(
-            reply_markup=create_service_details_keyboard(service_id, True)
-        )
+        if not seller:
+            await callback.answer("❌ Информация о продавце недоступна")
+            return
+            
+        # Проверяем, не является ли пользователь владельцем услуги
+        if str(callback.from_user.id) == str(service[1]):
+            await callback.answer("❌ Вы не можете забронировать свою собственную услугу")
+            return
+            
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📞 Телефон для связи", callback_data=f"phone_{service_id}"),
+                InlineKeyboardButton(text="✅ Забронировать", callback_data=f"book_{service_id}")
+            ],
+            [InlineKeyboardButton(text="⚠️ Жалоба на услугу", callback_data=f"create_complaint_service_{seller[2]}")],
+            [InlineKeyboardButton(text="🔙 К списку", callback_data="back_to_services")]
+        ])
         
-        await callback.message.answer(f"📞 Телефон для связи: {number_phone}")
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+        await callback.answer(f"📞 Телефон для связи: {number_phone}")
         
     except Exception as e:
         print(f"Ошибка при показе номера телефона: {e}")
         await callback.answer("❌ Произошла ошибка")
-    finally:
-        await callback.answer()
 
 @router.callback_query(lambda c: c.data.startswith('book_'))
 async def handle_book_button(callback: CallbackQuery, state: FSMContext):
@@ -552,6 +593,11 @@ async def handle_book_button(callback: CallbackQuery, state: FSMContext):
         if not service: 
             print(f"Услуга {service_id} не найдена при бронировании")
             await callback.answer("❌ Услуга не найдена")
+            return
+            
+        # Проверяем, не является ли пользователь владельцем услуги
+        if str(callback.from_user.id) == str(service[1]):
+            await callback.answer("❌ Вы не можете забронировать свою собственную услугу")
             return
             
         owner = db.get_user(telegram_id=service[1])
@@ -570,18 +616,22 @@ async def handle_book_button(callback: CallbackQuery, state: FSMContext):
         ])
         
         await callback.bot.send_message(
-            chat_id=owner[1],
-            text=f"🔔 Ваша услуга была забронирована!\n"
-                 f"👤 Пользователь: @{callback.from_user.username}\n"
-                 f"📝 Услуга: {service[3]}\n\n"
-                 "Если вы еще не связались с клиентом, сделайте это в ближайшее время.",
+            chat_id=owner[1],  # telegram_id из кортежа пользователя
+            text=(
+                f"🔔 Ваша услуга была забронирована!\n\n"
+                f"👤 Пользователь: @{callback.from_user.username}\n"
+                f"📝 Услуга: {service[3]}\n"
+                f"💰 Стоимость: {service[10]}₽\n\n"
+                "ℹ️ Если вы еще не связались с клиентом, сделайте это в ближайшее время."
+            ),
             reply_markup=owner_keyboard
         )
         
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.message.reply(
-            "✅ Услуга успешно забронирована!\n"
-            "Ожидайте, владелец свяжется с вами в ближайшее время."
+            "✅ Услуга успешно забронирована!\n\n"
+            "ℹ️ Владелец получил уведомление и свяжется с вами в ближайшее время.\n"
+            "📞 Вы также можете связаться с владельцем самостоятельно по указанному номеру телефона."
         )
         
     except Exception as e:
@@ -604,10 +654,10 @@ async def handle_cancel_book_button(callback: CallbackQuery, state: FSMContext):
             
         db.update_service_status(service_id, 'active')
         
-        booked_user = db.get_user(telegram_id=service[1])
+        booked_user = db.get_user(user_id=service[1])
         if booked_user:
             await callback.bot.send_message(
-                chat_id=booked_user[1],
+                chat_id=booked_user[1],  # telegram_id из кортежа пользователя
                 text=f"❌ Бронирование услуги «{service[3]}» было отменено владельцем."
             )
         

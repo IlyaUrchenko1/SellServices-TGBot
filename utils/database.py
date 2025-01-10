@@ -37,6 +37,7 @@ class Database:
                 required_fields TEXT NOT NULL DEFAULT '{
                     "photo": {"type": "image", "label": "Фотография услуги", "required": true, "description": "Загрузите фото, отражающее вашу услугу"},
                     "adress": {"type": "adress", "label": "Адрес", "required": true, "description": "Укажите адрес оказания услуги"},
+                    "district": {"type": "text", "label": "Район", "required": true, "description": "Укажите район оказания услуги"},
                     "number_phone": {"type": "text", "label": "Номер телефона", "required": false, "description": "Укажите номер телефона для связи"},
                     "price": {"type": "number", "label": "Стоимость", "required": true, "description": "Укажите стоимость услуги в рублях"}
                 }'
@@ -252,6 +253,7 @@ class Database:
             default_fields = {
                 "photo": {"type": "image", "label": "Фотография услуги", "required": True, "description": "Загрузите фото услуги"},
                 "adress": {"type": "adress", "label": "Адрес", "required": True, "description": "Укажите адрес оказания услуги"},
+                "district": {"type": "text", "label": "Район", "required": True, "description": "Укажите район оказания услуги"},
                 "number_phone": {"type": "text", "label": "Номер телефона", "required": False, "description": "Укажите номер телефона для связи"},
                 "price": {"type": "number", "label": "Стоимость", "required": True, "description": "Укажите стоимость в рублях"},
             }
@@ -417,7 +419,7 @@ class Database:
 
     def get_services(self,
                     service_type_id: Optional[int] = None,
-                    service_id: Optional[int] = None,
+                    service_id: Optional[int] = None, 
                     user_id: Optional[int] = None,
                     status: Optional[str] = None,
                     limit: Optional[int] = None,
@@ -437,14 +439,16 @@ class Database:
             Dict с информацией об услуге или список Dict или None при ошибке
         """
         try:
-            # Базовый запрос с параметризацией для безопасности
             query = """
                 SELECT 
                     s.*,
                     st.name as service_type_name,
                     st.required_fields as service_type_fields,
                     u.username as seller_username,
-                    u.number_phone as seller_phone
+                    u.number_phone as seller_phone,
+                    u.work_time_start as seller_work_time_start,
+                    u.work_time_end as seller_work_time_end,
+                    u.work_days as seller_work_days
                 FROM services s
                 LEFT JOIN service_types st ON s.service_type_id = st.id
                 LEFT JOIN users u ON s.user_id = u.id
@@ -452,7 +456,6 @@ class Database:
             """
             params = []
 
-            # Добавляем фильтры, используя параметризованные запросы
             if service_id is not None:
                 query += " AND s.id = ?"
                 params.append(service_id)
@@ -462,52 +465,46 @@ class Database:
             if user_id is not None:
                 query += " AND s.user_id = ?"
                 params.append(user_id)
-            if status is not None and status != '':
+            if status is not None:
                 query += " AND s.status = ?"
                 params.append(status)
 
-            # Безопасная сортировка с валидацией
             allowed_orders = {'created_at', 'updated_at', 'price', 'views', 'id'}
             order_parts = order_by.lower().split()
-            if len(order_parts) >= 1:
-                field = order_parts[0]
+            if len(order_parts) >= 1 and order_parts[0] in allowed_orders:
                 direction = 'DESC' if len(order_parts) > 1 and order_parts[1].upper() == 'DESC' else 'ASC'
-                if field in allowed_orders:
-                    query += f" ORDER BY s.{field} {direction}"
-                else:
-                    query += " ORDER BY s.created_at DESC"
+                query += f" ORDER BY s.{order_parts[0]} {direction}"
+            else:
+                query += " ORDER BY s.created_at DESC"
 
-            # Добавляем безопасные limit и offset
-            if isinstance(limit, int) and limit > 0:
+            if limit is not None and limit > 0:
                 query += " LIMIT ?"
-                params.append(min(limit, 1000))  # Ограничиваем максимальное значение
-            if isinstance(offset, int) and offset >= 0:
+                params.append(min(limit, 100))  # Ограничиваем до 100 записей
+            if offset is not None and offset >= 0:
                 query += " OFFSET ?"
                 params.append(offset)
-
+                
             self.cursor.execute(query, params)
             rows = self.cursor.fetchall()
 
             if not rows:
                 return None
 
-            # Преобразуем результаты в словари
             result = []
             columns = [desc[0] for desc in self.cursor.description]
             
             for row in rows:
                 item = dict(zip(columns, row))
                 
-                # Безопасно парсим JSON поля
                 for json_field in ['custom_fields', 'service_type_fields']:
                     if item.get(json_field):
                         try:
                             item[json_field] = json.loads(item[json_field])
-                        except (json.JSONDecodeError, TypeError):
+                        except json.JSONDecodeError:
                             item[json_field] = {}
                     else:
                         item[json_field] = {}
-                
+
                 result.append(item)
 
             return result[0] if service_id else result
