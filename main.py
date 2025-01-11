@@ -23,7 +23,7 @@ dp = Dispatcher()
 async def main():
     dp.message.middleware(PrivateChatMiddleware())
     dp.message.middleware(BanCheckMiddleware())
-    dp.message.middleware(WorkSetMiddleware())  # Устанавливаем тех. работы в боте
+    # dp.message.middleware(WorkSetMiddleware())  # Устанавливаем тех. работы в боте
     # dp.message.middleware(AntiFloodMiddleware(limit=1))  # Антифлуд можно включить по необходимости
 
     dp.include_router(main_handler.router)

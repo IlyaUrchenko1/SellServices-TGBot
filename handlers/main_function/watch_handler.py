@@ -9,10 +9,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from utils.database import Database
-from urllib.parse import quote
+from handlers.main_function.functions.create_complaints import ComplaintStates, create_complaint
 import json
 from typing import List, Dict, Any, Optional
-from handlers.main_function.functions.create_complaints import ComplaintStates, create_complaint
+from urllib.parse import quote
 
 router = Router(name='watch_handler')
 db = Database()
@@ -104,13 +104,13 @@ def create_services_keyboard(services: List[Dict], page: int = 1, type_id: Optio
     
     return keyboard.as_markup()
 
-def create_service_details_keyboard(service: Dict, seller_username: str) -> InlineKeyboardMarkup:
+def create_service_details_keyboard(service: Dict, seller_id: str) -> InlineKeyboardMarkup:
     """Создает клавиатуру для детального просмотра услуги"""
     keyboard = InlineKeyboardBuilder()
     
     keyboard.row(
         InlineKeyboardButton(text="📞 Показать телефон", callback_data=f"call_{service['id']}"),
-        InlineKeyboardButton(text="⚠️ Жалоба на услугу", callback_data=f"create_complaint_service_{seller_username}")
+        InlineKeyboardButton(text="⚠️ Жалоба на услугу", callback_data=f"create_complaint_service_{seller_id}_{service['id']}")
     )
     
     keyboard.row(InlineKeyboardButton(text="🔙 К списку", callback_data="back_to_services"))
@@ -263,7 +263,7 @@ async def show_service_details(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Информация о продавце недоступна")
             return
 
-        seller_username = seller[2]  # username из кортежа пользователя
+        seller_id = seller[1]  # id из кортежа пользователя
         
         db.increment_service_views(service_id)
         
@@ -313,7 +313,7 @@ async def show_service_details(callback: CallbackQuery, state: FSMContext):
         # Отправляем описание с кнопками
         details_message = await callback.message.answer(
             details,
-            reply_markup=create_service_details_keyboard(service_dict, seller_username)
+            reply_markup=create_service_details_keyboard(service_dict, seller_id)
         )
         sent_messages.append(details_message.message_id)
         
@@ -329,7 +329,78 @@ async def show_service_details(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("create_complaint_"))
 async def handle_complaint_button(callback: CallbackQuery, state: FSMContext):
     """Обработка создания жалобы"""
-    await create_complaint(callback, state)
+    try:
+        # Парсим данные из callback_data
+        parts = callback.data.split("_")
+        if len(parts) < 4:
+            await callback.answer("❌ Некорректные данные для создания жалобы")
+            return
+            
+        complaint_type = parts[2]  # 'user' или 'service'
+        accused_id = parts[3]
+        service_id = parts[4] if len(parts) > 4 else None
+        
+        # Проверяем валидность данных
+        if complaint_type not in ['user', 'service']:
+            await callback.answer("❌ Неверный тип жалобы")
+            return
+            
+        complainant_id = str(callback.from_user.id)
+        if complainant_id == accused_id:
+            await callback.answer("❌ Нельзя подать жалобу на самого себя")
+            return
+            
+        # Проверяем существование пользователя
+        accused_user = db.get_user(telegram_id=accused_id)
+        if not accused_user:
+            await callback.answer("❌ Пользователь не найден")
+            return
+            
+        # Проверяем существование услуги для жалоб на услуги
+        if complaint_type == 'service' and service_id:
+            service = db.get_service_by_id(int(service_id))
+            if not service:
+                await callback.answer("❌ Услуга не найдена")
+                return
+                
+        # Проверяем существующие жалобы
+        existing_complaints = db.get_complaints(
+            status='pending',
+            type=complaint_type,
+            complainant_telegram_id=complainant_id,
+            accused_telegram_id=accused_id,
+            service_id=int(service_id) if service_id else None
+        )
+        
+        if existing_complaints:
+            await callback.answer("❌ У вас уже есть активная жалоба на этого пользователя/услугу")
+            return
+            
+        # Сохраняем данные в состояние
+        await state.update_data(
+            complaint_type=complaint_type,
+            accused_telegram_id=accused_id,
+            complainant_telegram_id=complainant_id,
+            service_id=int(service_id) if service_id else None
+        )
+        
+        # Устанавливаем состояние ожидания текста жалобы
+        await state.set_state(ComplaintStates.waiting_for_text)
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_complaint")]
+        ])
+        
+        await callback.message.answer(
+            "Опишите причину жалобы.\nУкажите конкретные факты и детали ситуации.",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        print(f"Ошибка при создании жалобы: {e}")
+        await callback.answer("❌ Произошла ошибка при создании жалобы")
+        await state.clear()
 
 @router.callback_query(lambda c: c.data == "reset_filters")
 async def reset_filters(callback: CallbackQuery, state: FSMContext):
@@ -628,7 +699,7 @@ async def handle_book_button(callback: CallbackQuery, state: FSMContext):
         owner_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="❌ Отменить бронь", callback_data=f"cancel_book_{service_id}"),
-                InlineKeyboardButton(text="⚠️ Жалоба", callback_data=f"create_complaint_user_{callback.from_user.username}")
+                InlineKeyboardButton(text="⚠️ Жалоба", callback_data=f"create_complaint_user_{service['id']}")
             ]
         ])
         

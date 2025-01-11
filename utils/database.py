@@ -1,10 +1,10 @@
 import sqlite3
 from typing import Optional, Tuple, Dict, Any, List, Union
 import json
-
+from datetime import datetime
 
 class Database:
-    def __init__(self, db_name="services.db"):
+    def __init__(self, db_name="data/services.db"):
         try:
             self.connection = sqlite3.connect(db_name, check_same_thread=False)
             self.cursor = self.connection.cursor()
@@ -70,11 +70,21 @@ class Database:
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS complaints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                type TEXT,
-                complainant_telegram_username TEXT,
-                accused_telegram_username TEXT,
-                date TEXT,
-                text TEXT
+                type TEXT NOT NULL CHECK (type IN ('user', 'service')),
+                complainant_telegram_id TEXT NOT NULL,
+                accused_telegram_id TEXT NOT NULL,
+                service_id INTEGER,
+                complaint_text TEXT NOT NULL,
+                status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'resolved', 'rejected')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TIMESTAMP,
+                resolved_by_telegram_id TEXT,
+                resolution_text TEXT,
+                severity_level TEXT DEFAULT 'medium' CHECK (severity_level IN ('low', 'medium', 'high')),
+                FOREIGN KEY (complainant_telegram_id) REFERENCES users(telegram_id),
+                FOREIGN KEY (accused_telegram_id) REFERENCES users(telegram_id), 
+                FOREIGN KEY (service_id) REFERENCES services(id),
+                FOREIGN KEY (resolved_by_telegram_id) REFERENCES users(telegram_id)
             )
         """)
 
@@ -787,122 +797,359 @@ class Database:
 
     #region Методы для таблицы complaints
 
-    def add_complaint(self, type: str, complainant_telegram_username: str, accused_telegram_username: str, 
-                     date: str, text: str) -> bool:
+    def add_complaint(self, type: str, complainant_telegram_username: str, accused_telegram_username: str,
+                     text: str, service_id: Optional[int] = None) -> bool:
         """
         Добавляет новую жалобу в базу данных
         Args:
             type: Тип жалобы ('user' или 'service')
             complainant_telegram_username: Username пользователя, создавшего жалобу
-            accused_telegram_username: Username обвиняемого пользователя
-            date: Дата создания жалобы
+            accused_telegram_username: Username обвиняемого пользователя 
             text: Текст жалобы
+            service_id: ID услуги (опционально, только для жалоб на услуги)
         Returns:
             bool: True если жалоба успешно добавлена, False в случае ошибки
         """
         try:
             if type not in ['user', 'service']:
                 raise ValueError("Неверный тип жалобы")
-                
+
+            # Получаем telegram_id пользователей по username
+            self.cursor.execute("SELECT telegram_id FROM users WHERE username = ?", (complainant_telegram_username,))
+            complainant = self.cursor.fetchone()
+            
+            self.cursor.execute("SELECT telegram_id FROM users WHERE username = ?", (accused_telegram_username,))
+            accused = self.cursor.fetchone()
+            
+            if not complainant or not accused:
+                raise ValueError("Пользователь не найден")
+
+            complainant_telegram_id = complainant[0]
+            accused_telegram_id = accused[0]
+
+            # Проверяем, существует ли сервис, если это жалоба на сервис
+            if type == 'service' and service_id:
+                self.cursor.execute("SELECT * FROM services WHERE id = ?", (service_id,))
+                service = self.cursor.fetchone()
+                if not service:
+                    raise ValueError("Сервис не найден")
+
+            # Проверяем, не подает ли пользователь жалобу на самого себя
+            # if complainant_telegram_id == accused_telegram_id:
+            #     raise ValueError("Нельзя подать жалобу на самого себя")
+
+            # Проверяем, не существует ли уже активная жалоба
+            existing_complaint = self.cursor.execute("""
+                SELECT id FROM complaints 
+                WHERE complainant_telegram_id = ? AND accused_telegram_id = ? 
+                AND type = ? AND status = 'pending'
+                AND (service_id = ? OR (service_id IS NULL AND ? IS NULL))
+            """, (complainant_telegram_id, accused_telegram_id, type, service_id, service_id)).fetchone()
+
+            if existing_complaint:
+                raise ValueError("У вас уже есть активная жалоба на этого пользователя/сервис")
+
             self.cursor.execute("""
-                INSERT INTO complaints (type, complainant_telegram_username, accused_telegram_username, date, text)
-                VALUES (?, ?, ?, ?, ?)
-            """, (type, complainant_telegram_username, accused_telegram_username, date, text))
+                INSERT INTO complaints (
+                    type, complainant_telegram_id, accused_telegram_id, service_id,
+                    complaint_text, status, created_at, severity_level
+                )
+                VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, 'medium')
+            """, (type, complainant_telegram_id, accused_telegram_id, service_id, text))
+            
             self.connection.commit()
             return True
+            
+        except ValueError as ve:
+            print(f"Ошибка валидации при добавлении жалобы: {ve}")
+            return False
         except Exception as e:
             print(f"Ошибка при добавлении жалобы: {e}")
             return False
 
-    def get_complaints(self, type: Optional[str] = None, 
-                      complainant: Optional[str] = None,
-                      accused: Optional[str] = None) -> List[Dict]:
+    def get_complaint_by_id(self, complaint_id: int) -> Optional[Dict]:
+        """
+        Получает жалобу по ID
+        Args:
+            complaint_id: ID жалобы
+        Returns:
+            Dict с данными жалобы или None
+        """
+        try:
+            self.cursor.execute("""
+                SELECT 
+                    c.*,
+                    u1.username as complainant_username,
+                    u2.username as accused_username,
+                    u3.username as resolved_by_username,
+                    s.title as service_title,
+                    s.id as service_id
+                FROM complaints c
+                LEFT JOIN users u1 ON c.complainant_telegram_id = u1.telegram_id
+                LEFT JOIN users u2 ON c.accused_telegram_id = u2.telegram_id
+                LEFT JOIN users u3 ON c.resolved_by_telegram_id = u3.telegram_id
+                LEFT JOIN services s ON c.service_id = s.id
+                WHERE c.id = ?
+            """, (complaint_id,))
+            
+            row = self.cursor.fetchone()
+            if not row:
+                return None
+                
+            columns = [description[0] for description in self.cursor.description]
+            complaint = dict(zip(columns, row))
+            
+            # Преобразуем timestamp в читаемый формат
+            if complaint['created_at']:
+                complaint['created_at'] = datetime.strptime(
+                    complaint['created_at'], '%Y-%m-%d %H:%M:%S'
+                ).strftime('%d.%m.%Y %H:%M')
+            if complaint['resolved_at']:
+                complaint['resolved_at'] = datetime.strptime(
+                    complaint['resolved_at'], '%Y-%m-%d %H:%M:%S'
+                ).strftime('%d.%m.%Y %H:%M')
+                
+            return complaint
+            
+        except Exception as e:
+            print(f"Ошибка при получении жалобы: {e}")
+            return None
+
+    def get_complaints(self, status: Optional[str] = None, 
+                      type: Optional[str] = None,
+                      complainant_telegram_id: Optional[str] = None,
+                      accused_telegram_id: Optional[str] = None,
+                      service_id: Optional[int] = None,
+                      limit: Optional[int] = None) -> List[Dict]:
         """
         Получает список жалоб с возможностью фильтрации
         Args:
-            type: Тип жалобы для фильтрации ('user' или 'service')
-            complainant: Username заявителя для фильтрации
-            accused: Username обвиняемого для фильтрации
+            status: Статус жалобы ('pending', 'resolved', 'rejected')
+            type: Тип жалобы ('user' или 'service')
+            complainant_telegram_id: Telegram ID заявителя
+            accused_telegram_id: Telegram ID обвиняемого
+            service_id: ID услуги
+            limit: Ограничение количества результатов
         Returns:
-            List[Dict]: Список жалоб в виде словарей
+            List[Dict]: Список жалоб
         """
         try:
-            query = "SELECT * FROM complaints WHERE 1=1"
+            query = """
+                SELECT 
+                    c.*,
+                    u1.username as complainant_username,
+                    u2.username as accused_username,
+                    u3.username as resolved_by_username,
+                    s.title as service_title,
+                    s.id as service_id
+                FROM complaints c
+                LEFT JOIN users u1 ON c.complainant_telegram_id = u1.telegram_id
+                LEFT JOIN users u2 ON c.accused_telegram_id = u2.telegram_id
+                LEFT JOIN users u3 ON c.resolved_by_telegram_id = u3.telegram_id
+                LEFT JOIN services s ON c.service_id = s.id
+                WHERE 1=1
+            """
             params = []
             
+            if status:
+                query += " AND c.status = ?"
+                params.append(status)
             if type:
-                query += " AND type = ?"
+                query += " AND c.type = ?"
                 params.append(type)
-            if complainant:
-                query += " AND complainant_telegram_username = ?"
-                params.append(complainant)
-            if accused:
-                query += " AND accused_telegram_username = ?"
-                params.append(accused)
+            if complainant_telegram_id:
+                query += " AND c.complainant_telegram_id = ?"
+                params.append(complainant_telegram_id)
+            if accused_telegram_id:
+                query += " AND c.accused_telegram_id = ?"
+                params.append(accused_telegram_id)
+            if service_id:
+                query += " AND c.service_id = ?"
+                params.append(service_id)
                 
-            query += " ORDER BY date DESC"
+            query += " ORDER BY c.created_at DESC"
+
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
             
             self.cursor.execute(query, params)
             columns = [description[0] for description in self.cursor.description]
-            return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+            complaints = []
+            
+            for row in self.cursor.fetchall():
+                complaint = dict(zip(columns, row))
+                
+                # Преобразуем timestamp в читаемый формат
+                if complaint['created_at']:
+                    complaint['created_at'] = datetime.strptime(
+                        complaint['created_at'], '%Y-%m-%d %H:%M:%S'
+                    ).strftime('%d.%m.%Y %H:%M')
+                if complaint['resolved_at']:
+                    complaint['resolved_at'] = datetime.strptime(
+                        complaint['resolved_at'], '%Y-%m-%d %H:%M:%S'
+                    ).strftime('%d.%m.%Y %H:%M')
+                    
+                complaints.append(complaint)
+                
+            return complaints
+            
         except Exception as e:
             print(f"Ошибка при получении жалоб: {e}")
             return []
+
+    def update_complaint_status(self, complaint_id: int, status: str, 
+                              resolved_by_telegram_id: str, resolution_text: str) -> bool:
+        """
+        Обновляет статус жалобы
+        Args:
+            complaint_id: ID жалобы
+            status: Новый статус ('resolved' или 'rejected')
+            resolved_by_telegram_id: Telegram ID модератора
+            resolution_text: Текст решения
+        Returns:
+            bool: True если обновление успешно, False если произошла ошибка
+        """
+        try:
+            if status not in ['resolved', 'rejected']:
+                raise ValueError("Неверный статус жалобы")
+
+            # Проверяем существование жалобы
+            complaint = self.get_complaint_by_id(complaint_id)
+            if not complaint:
+                raise ValueError("Жалоба не найдена")
+
+            # Проверяем, не обработана ли уже жалоба
+            if complaint['status'] != 'pending':
+                raise ValueError("Жалоба уже обработана")
+
+            self.cursor.execute("""
+                UPDATE complaints 
+                SET status = ?,
+                    resolved_by_telegram_id = ?,
+                    resolution_text = ?,
+                    resolved_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'pending'
+            """, (status, resolved_by_telegram_id, resolution_text, complaint_id))
+            
+            if self.cursor.rowcount == 0:
+                raise ValueError("Не удалось обновить статус жалобы")
+                
+            self.connection.commit()
+            return True
+            
+        except ValueError as ve:
+            print(f"Ошибка валидации при обновлении статуса жалобы: {ve}")
+            return False
+        except Exception as e:
+            print(f"Ошибка при обновлении статуса жалобы: {e}")
+            return False
 
     def delete_complaint(self, complaint_id: int) -> bool:
         """
         Удаляет жалобу по ID
         Args:
-            complaint_id: ID жалобы для удаления
+            complaint_id: ID жалобы
         Returns:
-            bool: True если жалоба успешно удалена, False в случае ошибки
+            bool: True если удаление успешно, False если произошла ошибка
         """
         try:
+            # Проверяем существование жалобы
+            complaint = self.get_complaint_by_id(complaint_id)
+            if not complaint:
+                raise ValueError("Жалоба не найдена")
+
             self.cursor.execute("DELETE FROM complaints WHERE id = ?", (complaint_id,))
+            
+            if self.cursor.rowcount == 0:
+                raise ValueError("Не удалось удалить жалобу")
+                
             self.connection.commit()
             return True
+            
+        except ValueError as ve:
+            print(f"Ошибка валидации при удалении жалобы: {ve}")
+            return False
         except Exception as e:
             print(f"Ошибка при удалении жалобы: {e}")
             return False
 
-    def delete_complaint_by_complainant_telegram_username(self, complainant_telegram_username: str) -> bool:
+    def get_user_complaints_stats(self, telegram_id: str) -> Dict[str, int]:
         """
-        Удаляет все жалобы от конкретного пользователя
+        Получает статистику жалоб пользователя
         Args:
-            complainant_telegram_username: Username пользователя
+            telegram_id: Telegram ID пользователя
         Returns:
-            bool: True если жалобы успешно удалены, False в случае ошибки
-        """
-        try:
-            self.cursor.execute(
-                "DELETE FROM complaints WHERE complainant_telegram_username = ?", 
-                (complainant_telegram_username,)
-            )
-            self.connection.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка при удалении жалоб пользователя: {e}")
-            return False
-
-    def get_user_complaints_count(self, telegram_username: str) -> Dict[str, int]:
-        """
-        Получает количество жалоб на пользователя и от пользователя
-        Args:
-            telegram_username: Username пользователя
-        Returns:
-            Dict с количеством жалоб {'received': X, 'sent': Y}
+            Dict со статистикой:
+            {
+                'sent_total': общее количество отправленных жалоб,
+                'received_total': общее количество полученных жалоб,
+                'sent_pending': количество ожидающих рассмотрения отправленных жалоб,
+                'received_pending': количество ожидающих рассмотрения полученных жалоб,
+                'resolved_count': количество разрешенных жалоб,
+                'rejected_count': количество отклоненных жалоб
+            }
         """
         try:
             self.cursor.execute("""
                 SELECT 
-                    (SELECT COUNT(*) FROM complaints WHERE accused_telegram_username = ?) as received,
-                    (SELECT COUNT(*) FROM complaints WHERE complainant_telegram_username = ?) as sent
-            """, (telegram_username, telegram_username))
+                    (SELECT COUNT(*) FROM complaints WHERE complainant_telegram_id = ?) as sent_total,
+                    (SELECT COUNT(*) FROM complaints WHERE accused_telegram_id = ?) as received_total,
+                    (SELECT COUNT(*) FROM complaints WHERE complainant_telegram_id = ? AND status = 'pending') as sent_pending,
+                    (SELECT COUNT(*) FROM complaints WHERE accused_telegram_id = ? AND status = 'pending') as received_pending,
+                    (SELECT COUNT(*) FROM complaints WHERE (complainant_telegram_id = ? OR accused_telegram_id = ?) AND status = 'resolved') as resolved_count,
+                    (SELECT COUNT(*) FROM complaints WHERE (complainant_telegram_id = ? OR accused_telegram_id = ?) AND status = 'rejected') as rejected_count
+            """, (telegram_id, telegram_id, telegram_id, telegram_id, telegram_id, telegram_id, telegram_id, telegram_id))
+            
             row = self.cursor.fetchone()
-            return {'received': row[0], 'sent': row[1]}
+            if not row:
+                raise ValueError("Не удалось получить статистику")
+                
+            return {
+                'sent_total': row[0],
+                'received_total': row[1], 
+                'sent_pending': row[2],
+                'received_pending': row[3],
+                'resolved_count': row[4],
+                'rejected_count': row[5]
+            }
+            
         except Exception as e:
-            print(f"Ошибка при подсчете жалоб: {e}")
-            return {'received': 0, 'sent': 0}
+            print(f"Ошибка при получении статистики жалоб: {e}")
+            return {
+                'sent_total': 0,
+                'received_total': 0,
+                'sent_pending': 0,
+                'received_pending': 0,
+                'resolved_count': 0,
+                'rejected_count': 0
+            }
+
+    def get_complaints_count(self, status: Optional[str] = None) -> int:
+        """
+        Получает количество жалоб с указанным статусом
+        Args:
+            status: Статус жалобы ('pending', 'resolved', 'rejected')
+        Returns:
+            int: Количество жалоб
+        """
+        try:
+            query = "SELECT COUNT(*) FROM complaints"
+            params = []
+            
+            if status:
+                if status not in ['pending', 'resolved', 'rejected']:
+                    raise ValueError("Неверный статус жалобы")
+                query += " WHERE status = ?"
+                params.append(status)
+                
+            self.cursor.execute(query, params)
+            result = self.cursor.fetchone()
+            return result[0] if result else 0
+            
+        except Exception as e:
+            print(f"Ошибка при получении количества жалоб: {e}")
+            return 0
 
     #endregion
 

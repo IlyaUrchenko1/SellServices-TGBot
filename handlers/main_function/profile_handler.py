@@ -31,12 +31,12 @@ async def show_profile(message: Message, telegram_id: Optional[int] = None):
     user_id, telegram_id, username, phone, is_seller, full_name, work_time_start, work_time_end, work_days = user
     
     # Получаем статистику жалоб
-    complaints_stats = db.get_user_complaints_count(username)
+    complaints_stats = db.get_complaints_stats(telegram_id)
     
     # Если пользователь продавец, получаем его активные услуги
     active_services_count = 0
     if is_seller:
-        services = db.get_services(user_id=message.from_user.id)
+        services = db.get_services(user_id=user_id, status='active')
         active_services_count = len(services) if services else 0
     
     # Форматируем рабочие дни
@@ -60,8 +60,9 @@ async def show_profile(message: Message, telegram_id: Optional[int] = None):
         profile_text += f"📅 Рабочие дни: {work_days_formatted}\n"
         profile_text += f"📦 Активных услуг: {active_services_count}\n"
     
-    profile_text += f"\n📝 Жалоб получено: {complaints_stats['received']}\n"
-    profile_text += f"📝 Жалоб отправлено: {complaints_stats['sent']}\n"
+    profile_text += f"\n📝 Жалоб получено: {complaints_stats['received_total']}\n"
+    profile_text += f"📝 Жалоб отправлено: {complaints_stats['sent_total']}\n"
+    profile_text += f"📝 Жалоб в обработке: {complaints_stats['received_pending']}\n"
 
     # Создаем клавиатуру с действиями профиля
     keyboard = InlineKeyboardBuilder()
