@@ -1,12 +1,10 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime
-import json
-
 from utils.database import Database
 from utils.variables import ADMIN_IDS
 from keyboards.role_keyboards import admin_keyboard
@@ -22,97 +20,81 @@ class BanStates(StatesGroup):
 
 def format_complaint_text(complaint: dict) -> str:
     """Форматирует текст жалобы для отображения"""
+    creator = db.get_user(telegram_id=complaint['creator_telegram_id'])
+    creator_username = creator[2] if creator else 'Неизвестно'
+    
     base_text = (
         f"📝 Жалоба #{complaint['id']}\n"
-        f"От: @{complaint['complainant_username']}\n"
-        f"На: @{complaint['accused_username']}\n"
-        f"Дата: {complaint['created_at']}\n"
-        f"Статус: {complaint['status']}\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"👤 От: @{creator_username}\n"
+        f"📅 Дата: {complaint['created_at']}\n"
+        f"🔍 Тип: {'На сервис 🛍' if complaint['type'] == 'service' else 'На пользователя 👤'}\n"
+        f"━━━━━━━━━━━━━━━\n"
     )
-
-    if complaint['type'] == 'service':
-        service_info = (
-            f"🔍 Информация о сервисе:\n"
-            f"ID сервиса: {complaint['service_id']}\n"
-            f"Название: {complaint['service_title']}\n\n"
-        )
-        base_text += service_info
-
-    base_text += f"📄 Текст жалобы:\n{complaint['complaint_text']}"
     
+    if complaint['type'] == 'service':
+        service = db.get_service_by_id(complaint['accused_service_id'])
+        if service:
+            base_text += f"🛍 Услуга: {service[3]}\n"  # title is at index 3
+            seller = db.get_user(user_id=service[1])  # user_id is at index 1
+            if seller:
+                base_text += f"👤 Владелец: @{seller[2]}\n"  # username is at index 2
+    else:
+        accused = db.get_user(telegram_id=complaint['accused_telegram_id'])
+        accused_username = accused[2] if accused else 'Неизвестно'  # username is at index 2
+        base_text += f"👤 На пользователя: @{accused_username}\n"
+        
+    base_text += f"\n📄 Текст жалобы:\n{complaint['text']}"
     return base_text
 
 def get_complaint_keyboard(complaint: dict, page: int, total_pages: int) -> InlineKeyboardBuilder:
     """Создает клавиатуру для жалобы"""
-    keyboard = InlineKeyboardBuilder()
+    kb = InlineKeyboardBuilder()
     
-    # Кнопки действий для жалобы на сервис
-    if complaint['type'] == 'service':
-        keyboard.row(
-            InlineKeyboardButton(
-                text="👁 Просмотр сервиса", 
-                callback_data=f"view_service_{complaint['service_id']}"
-            ),
-            InlineKeyboardButton(
-                text="👤 Профиль продавца", 
-                callback_data=f"view_user_{complaint['accused_username']}"
-            )
-        )
-    # Кнопки действий для жалобы на пользователя
-    else:
-        keyboard.row(
-            InlineKeyboardButton(
-                text="👤 Профиль пользователя", 
-                callback_data=f"view_user_{complaint['accused_username']}"
-            )
-        )
-
-    # Кнопки модерации
-    keyboard.row(
-        InlineKeyboardButton(
-            text="❌ Отклонить", 
-            callback_data=f"dismiss_{complaint['id']}"
-        ),
-        InlineKeyboardButton(
-            text="🚫 Забанить", 
-            callback_data=f"ban_{complaint['accused_telegram_id']}_{complaint['id']}"
-        )
+    # Кнопки действий
+    kb.row(
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"dismiss_{complaint['id']}"),
+        InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_{complaint['id']}")
     )
+    
+    # Кнопки просмотра
+    kb.row(InlineKeyboardButton(
+        text="👤 Профиль отправителя", 
+        url=f"tg://user?id={complaint['creator_telegram_id']}"
+    ))
+    
+    if complaint['type'] == 'service':
+        kb.row(InlineKeyboardButton(
+            text="🛍 Просмотр услуги",
+            callback_data=f"view_service_{complaint['accused_service_id']}"
+        ))
+    else:
+        kb.row(InlineKeyboardButton(
+            text="👤 Профиль обвиняемого",
+            url=f"tg://user?id={complaint['accused_telegram_id']}"
+        ))
 
     # Навигация
-    if total_pages > 1:
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(InlineKeyboardButton(
-                text="⬅️ Назад", 
-                callback_data=f"complaints_page_{page-1}"
-            ))
-        nav_buttons.append(InlineKeyboardButton(
-            text=f"📄 {page + 1}/{total_pages}", 
-            callback_data="current_page"
-        ))
-        if page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton(
-                text="Вперед ➡️", 
-                callback_data=f"complaints_page_{page+1}"
-            ))
-        keyboard.row(*nav_buttons)
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"complaints_page_{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"complaints_page_{page+1}"))
+    kb.row(*nav_buttons)
 
-    keyboard.row(InlineKeyboardButton(text="🔙 В админ меню", callback_data="admin_menu"))
-    
-    return keyboard
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_menu"))
+    return kb
 
 @router.callback_query(F.data == "get_all_reports")
 async def show_complaints(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("❌ У вас нет прав администратора", show_alert=True)
+        await callback.answer("❌ Нет доступа", show_alert=True)
         return
         
-    complaints = db.get_complaints(status='pending')
-    
+    complaints = db.get_complaints()
     if not complaints:
         await callback.message.edit_text(
-            "📝 На данный момент активных жалоб нет",
+            "📝 Активных жалоб нет",
             reply_markup=admin_keyboard()
         )
         return
@@ -122,14 +104,6 @@ async def show_complaints(callback: CallbackQuery):
 
 async def show_complaints_page(message: Message, complaints: list, page: int):
     total_pages = (len(complaints) + COMPLAINTS_PER_PAGE - 1) // COMPLAINTS_PER_PAGE
-    
-    if not complaints:
-        await message.edit_text(
-            "📝 Жалоб больше нет",
-            reply_markup=admin_keyboard()
-        )
-        return
-
     page = min(max(0, page), total_pages - 1)
     start_idx = page * COMPLAINTS_PER_PAGE
     complaint = complaints[start_idx]
@@ -138,100 +112,124 @@ async def show_complaints_page(message: Message, complaints: list, page: int):
     keyboard = get_complaint_keyboard(complaint, page, total_pages)
 
     try:
-        await message.edit_text(text, reply_markup=keyboard.as_markup())
+        # Проверяем тип сообщения перед редактированием
+        if message.photo:
+            # Если сообщение содержит фото, отправляем новое сообщение
+            await message.answer(text, reply_markup=keyboard.as_markup())
+            await message.delete()
+        else:
+            # Если сообщение текстовое, редактируем его
+            await message.edit_text(text, reply_markup=keyboard.as_markup())
     except Exception as e:
-        print(f"Error in show_complaints_page: {e}")
+        print(f"Error showing complaints: {e}")
         await message.answer(text, reply_markup=keyboard.as_markup())
-
-@router.callback_query(F.data.startswith("view_service_"))
-async def view_service(callback: CallbackQuery):
-    service_id = int(callback.data.split("_")[2])
-    service = db.get_service_by_id(service_id)
-    
-    if not service:
-        await callback.answer("❌ Сервис не найден или удален", show_alert=True)
-        return
-        
-    # Преобразуем результат в словарь
-    service_dict = dict(service)
-    
-    # Загружаем JSON поля
-    try:
-        custom_fields = json.loads(service_dict.get('custom_fields', '{}'))
-    except:
-        custom_fields = {}
-        
-    text = (
-        f"🔍 Сервис #{service_id}\n"
-        f"Название: {service_dict['title']}\n"
-        f"Описание: {custom_fields.get('description', 'Нет описания')}\n"
-        f"Город: {service_dict['city']}\n"
-        f"Район: {service_dict['district']}\n"
-        f"Цена: {service_dict['price']}₽\n"
-        f"Статус: {service_dict['status']}"
-    )
-    
-    keyboard = InlineKeyboardBuilder()
-    keyboard.row(InlineKeyboardButton(text="🔙 Назад к жалобе", callback_data="get_all_reports"))
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup())
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("view_user_"))
-async def view_user(callback: CallbackQuery):
-    username = callback.data.split("_")[2]
-    user = db.get_user(username=username)
-    
-    if not user:
-        await callback.answer("❌ Пользователь не найден", show_alert=True)
-        return
-        
-    # Преобразуем результат в словарь
-    user_dict = dict(user)
-    
-    text = (
-        f"👤 Профиль @{username}\n"
-        f"Telegram ID: {user_dict['telegram_id']}\n"
-        f"Телефон: {user_dict.get('number_phone', 'Не указан')}\n"
-        f"Роль: {'Продавец' if user_dict.get('is_seller') else 'Покупатель'}\n"
-        f"Дата регистрации: {user_dict.get('created_at', 'Не указана')}"
-    )
-    
-    keyboard = InlineKeyboardBuilder()
-    keyboard.row(InlineKeyboardButton(text="🔙 Назад к жалобе", callback_data="get_all_reports"))
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup())
-    await callback.answer()
 
 @router.callback_query(F.data.startswith("complaints_page_"))
 async def handle_pagination(callback: CallbackQuery):
     page = int(callback.data.split("_")[2])
-    complaints = db.get_complaints(status='pending')
+    complaints = db.get_complaints()
     await show_complaints_page(callback.message, complaints, page)
     await callback.answer()
 
 @router.callback_query(F.data == "admin_menu")
 async def return_to_admin_menu(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "🔰 Админ-панель\nВыберите действие:",
-        reply_markup=admin_keyboard()
-    )
+    try:
+        # Проверяем тип сообщения перед редактированием
+        if callback.message.photo:
+            # Если сообщение содержит фото, отправляем новое сообщение
+            await callback.message.answer(
+                "🔰 Админ-панель",
+                reply_markup=admin_keyboard()
+            )
+            await callback.message.delete()
+        else:
+            # Если сообщение текстовое, редактируем его
+            await callback.message.edit_text(
+                "🔰 Админ-панель",
+                reply_markup=admin_keyboard()
+            )
+    except Exception as e:
+        print(f"Error returning to admin menu: {e}")
+        await callback.message.answer(
+            "🔰 Админ-панель",
+            reply_markup=admin_keyboard()
+        )
     await callback.answer()
 
 @router.callback_query(F.data.startswith("dismiss_"))
 async def dismiss_complaint(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("❌ У вас нет прав администратора", show_alert=True)
+        await callback.answer("❌ Нет доступа", show_alert=True)
         return
         
     complaint_id = int(callback.data.split("_")[1])
+    if db.delete_complaint(complaint_id):
+        complaints = db.get_complaints()
+        if complaints:
+            await show_complaints_page(callback.message, complaints, 0)
+        else:
+            try:
+                if callback.message.photo:
+                    await callback.message.answer(
+                        "📝 Активных жалоб больше нет",
+                        reply_markup=admin_keyboard()
+                    )
+                    await callback.message.delete()
+                else:
+                    await callback.message.edit_text(
+                        "📝 Активных жалоб больше нет",
+                        reply_markup=admin_keyboard()
+                    )
+            except Exception as e:
+                print(f"Error dismissing complaint: {e}")
+                await callback.message.answer(
+                    "📝 Активных жалоб больше нет",
+                    reply_markup=admin_keyboard()
+                )
+        await callback.answer("✅ Жалоба отклонена")
+    else:
+        await callback.answer("❌ Ошибка при отклонении жалобы", show_alert=True)
+
+class ComplaintAction(StatesGroup):
+    waiting_for_action = State()
+    waiting_for_duration = State()
+    waiting_for_reason = State()
+
+@router.callback_query(F.data.startswith("accept_"))
+async def accept_complaint(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    complaint_id = int(callback.data.split("_")[1])
+    complaint = db.get_complaints(complaint_id=complaint_id)[0]
     
-    try:
-        db.update_complaint_status(
-            complaint_id=complaint_id,
-            status='rejected',
-            resolved_by_id=callback.from_user.id
-        )
-        
-        complaints = db.get_complaints(status='pending')
+    await state.update_data(complaint_id=complaint_id, complaint=complaint)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ Предупреждение", callback_data="action_warning")],
+        [InlineKeyboardButton(text="🕒 Временный бан", callback_data="action_temp_ban")],
+        [InlineKeyboardButton(text="🚫 Перманентный бан", callback_data="action_perm_ban")],
+        [InlineKeyboardButton(text="↩️ Отмена", callback_data="action_cancel")]
+    ])
+    
+    action_text = "пользователя" if complaint['type'] == 'user' else "услугу"
+    await callback.message.edit_text(
+        f"Выберите действие для жалобы на {action_text}:",
+        reply_markup=keyboard
+    )
+    await state.set_state(ComplaintAction.waiting_for_action)
+
+@router.callback_query(ComplaintAction.waiting_for_action)
+async def process_action(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    action = callback.data.split("_")[1]
+    data = await state.get_data()
+    complaint = data['complaint']
+    
+    if action == "cancel":
+        await state.clear()
+        complaints = db.get_complaints()
         if complaints:
             await show_complaints_page(callback.message, complaints, 0)
         else:
@@ -239,125 +237,104 @@ async def dismiss_complaint(callback: CallbackQuery):
                 "📝 Активных жалоб больше нет",
                 reply_markup=admin_keyboard()
             )
-        await callback.answer("✅ Жалоба отклонена")
-        
-    except Exception as e:
-        print(f"Error in dismiss_complaint: {e}")
-        await callback.answer("❌ Ошибка при отклонении жалобы", show_alert=True)
-
-@router.callback_query(F.data.startswith("ban_"))
-async def start_ban_process(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("❌ У вас нет прав администратора", show_alert=True)
-        return
-        
-    telegram_id, complaint_id = callback.data.split("_")[1:]
-    await state.update_data(telegram_id=telegram_id, complaint_id=complaint_id)
-    await state.set_state(BanStates.waiting_for_duration)
-    
-    keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(text="🔙 Отмена", callback_data="cancel_ban"))
-    
-    await callback.message.edit_text(
-        "⏰ Введите длительность бана в часах (целое число):",
-        reply_markup=keyboard.as_markup()
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "cancel_ban")
-async def cancel_ban(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    complaints = db.get_complaints(status='pending')
-    await show_complaints_page(callback.message, complaints, 0)
-    await callback.answer("❌ Процесс бана отменен")
-
-@router.message(BanStates.waiting_for_duration)
-async def process_ban_duration(message: Message, state: FSMContext):
-    if not message.text.isdigit():
-        keyboard = InlineKeyboardBuilder()
-        keyboard.add(InlineKeyboardButton(text="🔙 Отмена", callback_data="cancel_ban"))
-        await message.answer(
-            "❌ Пожалуйста, введите целое число часов\n"
-            "Или нажмите кнопку отмены ниже",
-            reply_markup=keyboard.as_markup()
-        )
-        return
-        
-    hours = int(message.text)
-    await state.update_data(ban_hours=hours)
-    await state.set_state(BanStates.waiting_for_reason)
-    
-    keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(text="🔙 Отмена", callback_data="cancel_ban"))
-    
-    await message.answer(
-        "📝 Введите причину бана:",
-        reply_markup=keyboard.as_markup()
-    )
-
-@router.message(BanStates.waiting_for_reason)
-async def process_ban_reason(message: Message, state: FSMContext):
-    data = await state.get_data()
-    telegram_id = data['telegram_id']
-    complaint_id = data['complaint_id']
-    ban_hours = data['ban_hours']
-    ban_reason = message.text
-    
-    user = db.get_user(telegram_id=telegram_id)
-    if not user:
-        await message.answer(
-            "❌ Пользователь не найден",
-            reply_markup=admin_keyboard()
-        )
-        await state.clear()
         return
 
-    try:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Баним пользователя
-        db.ban_user(telegram_id, current_time, ban_hours, ban_reason)
-        
-        # Обновляем статус жалобы
-        db.update_complaint_status(
-            complaint_id=int(complaint_id),
-            status='resolved',
-            resolved_by_id=message.from_user.id,
-            resolution_text=f"Пользователь забанен на {ban_hours} часов. Причина: {ban_reason}"
-        )
-        
-        # Деактивируем все услуги пользователя
-        user_services = db.get_services(user_id=user['id'])
-        if user_services:
-            for service in user_services:
-                db.update_service(service['id'], status='deactive')
-        
-        # Уведомляем забаненного пользователя
-        try:
-            await message.bot.send_message(
-                telegram_id,
-                f"⛔️ Ваш аккаунт заблокирован на {ban_hours} часов\n"
-                f"📝 Причина: {ban_reason}\n\n"
-                "❗️ Если вы считаете, что произошла ошибка - обратитесь в поддержку"
-            )
-        except Exception as e:
-            print(f"Failed to notify banned user: {e}")
-
-        complaints = db.get_complaints(status='pending')
-        if complaints:
-            await show_complaints_page(message, complaints, 0)
-        else:
-            await message.answer(
-                f"✅ Пользователь с ID {telegram_id} забанен на {ban_hours} часов\n"
-                f"📝 Причина: {ban_reason}\n\n"
-                "Активных жалоб больше нет",
+    if action == "warning":
+        if complaint['type'] == 'user':
+            await callback.message.answer(
+                f"⚠️ Пользователю {complaint['accused_username']} отправлено предупреждение",
                 reply_markup=admin_keyboard()
             )
-    except Exception as e:
-        print(f"Error in process_ban_reason: {e}")
+            await callback.bot.send_message(
+                complaint['accused_telegram_id'],
+                "⚠️ Вам вынесено предупреждение от администрации. При повторном нарушении вы будете заблокированы."
+            )
+        else:
+            await callback.message.answer(
+                f"⚠️ Владельцу услуги отправлено предупреждение",
+                reply_markup=admin_keyboard() 
+            )
+            await callback.bot.send_message(
+                complaint['accused_telegram_id'],
+                "⚠️ На вашу услугу поступила жалоба. При повторном нарушении услуга будет заблокирована."
+            )
+        db.delete_complaint(data['complaint_id'])
+        await state.clear()
+        return
+
+    await state.update_data(action=action)
+    
+    if action == "temp_ban":
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="1 час", callback_data="duration_1")],
+            [InlineKeyboardButton(text="24 часа", callback_data="duration_24")],
+            [InlineKeyboardButton(text="72 часа", callback_data="duration_72")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data="action_cancel")]
+        ])
+        await callback.message.edit_text(
+            "Выберите длительность бана:",
+            reply_markup=keyboard
+        )
+        await state.set_state(ComplaintAction.waiting_for_duration)
+    else:  # permanent ban
+        await callback.message.edit_text("Введите причину бана:")
+        await state.set_state(ComplaintAction.waiting_for_reason)
+
+@router.callback_query(ComplaintAction.waiting_for_duration)
+async def process_duration(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.data == "action_cancel":
+        await state.clear()
+        complaints = db.get_complaints()
+        await show_complaints_page(callback.message, complaints, 0)
+        return
+
+    duration = int(callback.data.split("_")[1])
+    await state.update_data(duration=duration)
+    await callback.message.edit_text("Введите причину бана:")
+    await state.set_state(ComplaintAction.waiting_for_reason)
+
+@router.message(ComplaintAction.waiting_for_reason)
+async def process_reason(message: Message, state: FSMContext):
+    await message.answer()
+    data = await state.get_data()
+    complaint = data['complaint']
+    action = data['action']
+    reason = message.text
+    
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if complaint['type'] == 'user':
+        duration = None if action == "perm_ban" else data.get('duration')
+        db.ban_user(
+            complaint['accused_telegram_id'],
+            current_time,
+            duration,
+            reason
+        )
+        ban_text = "навсегда" if action == "perm_ban" else f"на {duration} час(ов)"
+        await message.bot.send_message(
+            complaint['accused_telegram_id'],
+            f"🚫 Вы были заблокированы {ban_text}\nПричина: {reason}"
+        )
+    else:
+        if action == "perm_ban":
+            db.delete_service(complaint['accused_service_id'], hard_delete=True)
+        else:
+            db.update_service_status(complaint['accused_service_id'], 'blocked')
+        await message.bot.send_message(
+            complaint['accused_telegram_id'],
+            f"🚫 Ваша услуга была заблокирована\nПричина: {reason}"
+        )
+
+    db.delete_complaint(data['complaint_id'])
+    await state.clear()
+    
+    complaints = db.get_complaints()
+    if complaints:
+        await show_complaints_page(message, complaints, 0)
+    else:
         await message.answer(
-            "❌ Произошла ошибка при бане пользователя",
+            "📝 Активных жалоб больше нет",
             reply_markup=admin_keyboard()
         )
-    finally:
-        await state.clear()

@@ -74,34 +74,51 @@ async def show_main_menu(message: Message, user, name: Optional[str] = None) -> 
 @router.callback_query(F.data == "go_to_home")
 async def go_to_home(callback: CallbackQuery, state: FSMContext):
     """Обработчик возврата в главное меню"""
-    await open_home(callback.message, state)
+    await callback.answer()
+    await open_home(callback.message, callback.from_user, state, is_callback=True)
     
 @router.message(F.text.in_(["Вернуться домой 🏠"]))
 async def go_to_home_reply(message: Message, state: FSMContext):
-    await open_home(message, state)
+    await open_home(message, message.from_user, state)
 
 
-async def open_home(message: Message, state: FSMContext):
+async def open_home(message: Message, user, state: FSMContext, is_callback: bool = False):
     try:
         await state.clear()
         
-        user = db.get_user(telegram_id=str(message.from_user.id))
-        if not user:
+        db_user = db.get_user(telegram_id=str(user.id))
+        if not db_user:
+            try:
+                db.add_user(telegram_id=str(user.id), username=user.username)
+                db_user = db.get_user(telegram_id=str(user.id))
+                if not db_user:
+                    raise Exception("Не удалось создать пользователя")
+            except Exception as e:
+                error_text = "❌ Ошибка получения данных пользователя. Попробуйте перезапустить бота командой /start\nНикакие данные не будут потеряны"
+                if is_callback:
+                    try:
+                        await message.edit_text(error_text, reply_markup=to_home_keyboard())
+                    except:
+                        await message.answer(error_text, reply_markup=to_home_keyboard())
+                else:
+                    await message.answer(error_text, reply_markup=to_home_keyboard())
+                return
+            
+        if is_callback:
             try:
                 await message.edit_text(
-                    "❌ Ошибка получения данных пользователя. Попробуйте перезапустить бота командой /start\nНикакие данные не будут потеряны",
-                    reply_markup=to_home_keyboard()
+                    f"👋 Здравствуйте, {user.first_name}!",
+                    reply_markup=seller_keyboard() if db.is_seller(telegram_id=str(db_user[1])) else user_keyboard()
                 )
-            except Exception as e:
+            except:
                 await message.answer(
-                    "❌ Произошла ошибка при отображении меню. Попробуйте еще раз.",
-                    reply_markup=to_home_keyboard()
+                    f"👋 Здравствуйте, {user.first_name}!",
+                    reply_markup=seller_keyboard() if db.is_seller(telegram_id=str(db_user[1])) else user_keyboard()
                 )
-            return
-            
-        await show_main_menu(message, user, name=message.from_user.first_name)
+        else:
+            await show_main_menu(message, db_user, name=user.first_name)
         
-        if message.from_user.id in ADMIN_IDS:
+        if user.id in ADMIN_IDS:
             await message.answer(
                 "🌟 Панель администратора доступна:\n"
                 "- Рассылка сообщений\n"
@@ -112,10 +129,14 @@ async def open_home(message: Message, state: FSMContext):
             
     except Exception as e:
         print(f"Ошибка в go_to_home: {e}")
-        await message.edit_text(
-            "❌ Произошла ошибка. Попробуйте еще раз или перезапустите бота командой /start",
-            reply_markup=to_home_keyboard()
-        )
+        error_text = "❌ Произошла ошибка. Попробуйте еще раз или перезапустите бота командой /start"
+        if is_callback:
+            try:
+                await message.edit_text(error_text, reply_markup=to_home_keyboard())
+            except:
+                await message.answer(error_text, reply_markup=to_home_keyboard())
+        else:
+            await message.answer(error_text, reply_markup=to_home_keyboard())
 
 @router.message(F.text == "/get_id")
 async def get_id(message: Message):

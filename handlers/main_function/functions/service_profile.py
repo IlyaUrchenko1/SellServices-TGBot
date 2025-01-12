@@ -507,7 +507,7 @@ async def confirm_delete_service(callback: CallbackQuery):
     """Подтверждение удаления услуги"""
     try:
         service_id = int(callback.data.split("_")[2])
-        if db.delete_service(service_id):
+        if db.delete_service(service_id, hard_delete=True):
             await callback.answer("✅ Услуга успешно удалена")
             await callback.message.answer("✅ Услуга успешно удалена")
             
@@ -562,3 +562,52 @@ def validate_form_data(data: Dict[str, Any], required_fields: Dict[str, Dict[str
             if field_name not in data or not data[field_name]:
                 return f"Поле '{field_info.get('label', field_name)}' обязательно для заполнения"
     return None
+
+
+@router.callback_query(F.data.startswith("view_service_"))
+async def view_service(callback: CallbackQuery):
+    await callback.answer()
+    """Просмотр услуги"""
+    try:
+        service_id = int(callback.data.split("_")[2])
+        service = db.get_services(service_id=service_id)
+        
+        if not service:
+            await callback.answer("❌ Услуга не найдена")
+            return
+            
+        caption = await format_service_info(service)
+        keyboard = InlineKeyboardBuilder()
+        
+        # Добавляем кнопку возврата к жалобам
+        keyboard.row(InlineKeyboardButton(
+            text="🔙 Вернуться к жалобам",
+            callback_data="get_all_reports"
+        ))
+        
+        if service.get('photo_id'):
+            photo_ids = service['photo_id'].split(',')
+            if len(photo_ids) == 1:
+                await callback.message.edit_media(
+                    media=InputMediaPhoto(media=photo_ids[0], caption=caption),
+                    reply_markup=keyboard.as_markup()
+                )
+            else:
+                media = [InputMediaPhoto(media=photo_ids[0], caption=caption)]
+                media.extend([InputMediaPhoto(media=photo_id) for photo_id in photo_ids[1:]])
+                await callback.message.edit_media(
+                    media=media,
+                    reply_markup=keyboard.as_markup()
+                )
+        else:
+            await callback.message.edit_text(
+                caption,
+                reply_markup=keyboard.as_markup()
+            )
+            
+        # Увеличиваем счетчик просмотров
+        db.update_service(service_id, views=service.get('views', 0) + 1)
+        
+    except Exception as e:
+        print(f"Ошибка при просмотре услуги: {e}")
+        await callback.answer("❌ Произошла ошибка при просмотре услуги")

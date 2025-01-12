@@ -30,13 +30,20 @@ async def show_profile(message: Message, telegram_id: Optional[int] = None):
     # Распаковываем данные пользователя согласно структуре БД
     user_id, telegram_id, username, phone, is_seller, full_name, work_time_start, work_time_end, work_days = user
     
-    # Получаем статистику жалоб
-    complaints_stats = db.get_complaints_stats(telegram_id)
+    # Получаем статистику жалоб через новый метод get_complaints
+    received_complaints = db.get_complaints(accused_telegram_id=telegram_id)
+    sent_complaints = db.get_complaints(creator_telegram_id=telegram_id)
+    
+    complaints_stats = {
+        'received_total': len(received_complaints),
+        'sent_total': len(sent_complaints),
+        'received_pending': len([c for c in received_complaints if c['status'] == 'pending'])
+    }
     
     # Если пользователь продавец, получаем его активные услуги
     active_services_count = 0
     if is_seller:
-        services = db.get_services(user_id=user_id, status='active')
+        services = db.get_services(telegram_id=telegram_id, status='active')
         active_services_count = len(services) if services else 0
     
     # Форматируем рабочие дни

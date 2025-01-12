@@ -71,30 +71,39 @@ class Database:
             CREATE TABLE IF NOT EXISTS complaints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 type TEXT NOT NULL CHECK (type IN ('user', 'service')),
-                complainant_telegram_id TEXT NOT NULL,
-                accused_telegram_id TEXT NOT NULL,
-                service_id INTEGER,
-                complaint_text TEXT NOT NULL,
-                status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'resolved', 'rejected')),
+                creator_telegram_id TEXT NOT NULL,
+                accused_telegram_id TEXT,
+                accused_service_id INTEGER,
+                text TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                resolved_at TIMESTAMP,
-                resolved_by_telegram_id TEXT,
-                resolution_text TEXT,
-                severity_level TEXT DEFAULT 'medium' CHECK (severity_level IN ('low', 'medium', 'high')),
-                FOREIGN KEY (complainant_telegram_id) REFERENCES users(telegram_id),
+                FOREIGN KEY (creator_telegram_id) REFERENCES users(telegram_id),
                 FOREIGN KEY (accused_telegram_id) REFERENCES users(telegram_id), 
-                FOREIGN KEY (service_id) REFERENCES services(id),
-                FOREIGN KEY (resolved_by_telegram_id) REFERENCES users(telegram_id)
+                FOREIGN KEY (accused_service_id) REFERENCES services(id)
             )
         """)
 
         self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS banned_users (
+            CREATE TABLE IF NOT EXISTS banned_types (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id TEXT UNIQUE,
-                ban_date TEXT,
+                type TEXT NOT NULL CHECK (type IN ('user', 'service')),
+                
+                admin_telegram_id TEXT NOT NULL,
+                
+                accused_telegram_id TEXT,
+                accused_service_id INTEGER,
+                
+                ban_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
                 ban_duration_hours INTEGER,
-                reason TEXT
+                unban_price INTEGER DEFAULT 0,
+                
+                is_permanent BOOLEAN DEFAULT 0,
+                can_buy_unban BOOLEAN DEFAULT 1,
+                
+                reason TEXT NOT NULL,
+                FOREIGN KEY (admin_telegram_id) REFERENCES users(telegram_id),
+                FOREIGN KEY (accused_telegram_id) REFERENCES users(telegram_id),
+                FOREIGN KEY (accused_service_id) REFERENCES services(id),
             )
         """)
 
@@ -430,7 +439,7 @@ class Database:
     def get_services(self,
                     service_type_id: Optional[int] = None,
                     service_id: Optional[int] = None, 
-                    user_id: Optional[int] = None,
+                    telegram_id: Optional[int] = None,
                     status: Optional[str] = None,
                     limit: Optional[int] = None,
                     offset: Optional[int] = None,
@@ -440,7 +449,7 @@ class Database:
         Args:
             service_type_id: ID типа услуги
             service_id: ID конкретной услуги
-            user_id: ID пользователя для получения его услуг 
+            telegram_id: Telegram ID пользователя для получения его услуг 
             status: Статус услуг ('active', 'deactive', 'deleted', None для всех)
             limit: Ограничение количества результатов
             offset: Смещение для пагинации
@@ -472,9 +481,9 @@ class Database:
             if service_type_id is not None:
                 query += " AND s.service_type_id = ?"
                 params.append(service_type_id)
-            if user_id is not None:
+            if telegram_id is not None:
                 query += " AND s.user_id = ?"
-                params.append(user_id)
+                params.append(telegram_id)
             if status is not None:
                 query += " AND s.status = ?"
                 params.append(status)
@@ -498,7 +507,7 @@ class Database:
             rows = self.cursor.fetchall()
 
             if not rows:
-                return None
+                return []  # Возвращаем пустой список вместо None
 
             result = []
             columns = [desc[0] for desc in self.cursor.description]
@@ -521,7 +530,7 @@ class Database:
 
         except Exception as e:
             print(f"Ошибка при получении услуг: {str(e)}")
-            return None
+            return []  # Возвращаем пустой список вместо None
 
     def update_service(self, service_id: int, **kwargs) -> bool:
         """
@@ -797,16 +806,17 @@ class Database:
 
     #region Методы для таблицы complaints
 
-    def add_complaint(self, type: str, complainant_telegram_username: str, accused_telegram_username: str,
-                     text: str, service_id: Optional[int] = None) -> bool:
+    def add_complaint(self, type: str, creator_telegram_id: str, text: str,
+                     accused_telegram_id: Optional[str] = None,
+                     accused_service_id: Optional[int] = None) -> bool:
         """
         Добавляет новую жалобу в базу данных
         Args:
             type: Тип жалобы ('user' или 'service')
-            complainant_telegram_username: Username пользователя, создавшего жалобу
-            accused_telegram_username: Username обвиняемого пользователя 
+            creator_telegram_id: Telegram ID создателя жалобы
             text: Текст жалобы
-            service_id: ID услуги (опционально, только для жалоб на услуги)
+            accused_telegram_id: Telegram ID обвиняемого пользователя (для жалоб на пользователей)
+            accused_service_id: ID обвиняемой услуги (для жалоб на услуги)
         Returns:
             bool: True если жалоба успешно добавлена, False в случае ошибки
         """
@@ -814,55 +824,43 @@ class Database:
             if type not in ['user', 'service']:
                 raise ValueError("Неверный тип жалобы")
 
-            # Получаем telegram_id пользователей по username
-            self.cursor.execute("SELECT telegram_id FROM users WHERE username = ?", (complainant_telegram_username,))
-            complainant = self.cursor.fetchone()
-            
-            self.cursor.execute("SELECT telegram_id FROM users WHERE username = ?", (accused_telegram_username,))
-            accused = self.cursor.fetchone()
-            
-            if not complainant or not accused:
-                raise ValueError("Пользователь не найден")
+            if type == 'user' and not accused_telegram_id:
+                raise ValueError("Для жалобы на пользователя требуется accused_telegram_id")
+                
+            if type == 'service' and not accused_service_id:
+                raise ValueError("Для жалобы на услугу требуется accused_service_id")
 
-            complainant_telegram_id = complainant[0]
-            accused_telegram_id = accused[0]
+            # Проверяем существование пользователей
+            self.cursor.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (creator_telegram_id,))
+            if not self.cursor.fetchone():
+                raise ValueError("Создатель жалобы не найден")
 
-            # Проверяем, существует ли сервис, если это жалоба на сервис
-            if type == 'service' and service_id:
-                self.cursor.execute("SELECT * FROM services WHERE id = ?", (service_id,))
-                service = self.cursor.fetchone()
-                if not service:
-                    raise ValueError("Сервис не найден")
+            if accused_telegram_id:
+                self.cursor.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (accused_telegram_id,))
+                if not self.cursor.fetchone():
+                    raise ValueError("Обвиняемый пользователь не найден")
 
-            # Проверяем, не подает ли пользователь жалобу на самого себя
-            # if complainant_telegram_id == accused_telegram_id:
+            # Проверяем существование услуги
+            if accused_service_id:
+                self.cursor.execute("SELECT id FROM services WHERE id = ?", (accused_service_id,))
+                if not self.cursor.fetchone():
+                    raise ValueError("Услуга не найдена")
+
+            # # Проверяем, не подает ли пользователь жалобу на самого себя
+            # if creator_telegram_id == accused_telegram_id:
             #     raise ValueError("Нельзя подать жалобу на самого себя")
-
-            # Проверяем, не существует ли уже активная жалоба
-            existing_complaint = self.cursor.execute("""
-                SELECT id FROM complaints 
-                WHERE complainant_telegram_id = ? AND accused_telegram_id = ? 
-                AND type = ? AND status = 'pending'
-                AND (service_id = ? OR (service_id IS NULL AND ? IS NULL))
-            """, (complainant_telegram_id, accused_telegram_id, type, service_id, service_id)).fetchone()
-
-            if existing_complaint:
-                raise ValueError("У вас уже есть активная жалоба на этого пользователя/сервис")
 
             self.cursor.execute("""
                 INSERT INTO complaints (
-                    type, complainant_telegram_id, accused_telegram_id, service_id,
-                    complaint_text, status, created_at, severity_level
+                    type, creator_telegram_id, accused_telegram_id, 
+                    accused_service_id, text, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, 'medium')
-            """, (type, complainant_telegram_id, accused_telegram_id, service_id, text))
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (type, creator_telegram_id, accused_telegram_id, accused_service_id, text))
             
             self.connection.commit()
             return True
             
-        except ValueError as ve:
-            print(f"Ошибка валидации при добавлении жалобы: {ve}")
-            return False
         except Exception as e:
             print(f"Ошибка при добавлении жалобы: {e}")
             return False
@@ -879,16 +877,13 @@ class Database:
             self.cursor.execute("""
                 SELECT 
                     c.*,
-                    u1.username as complainant_username,
+                    u1.username as creator_username,
                     u2.username as accused_username,
-                    u3.username as resolved_by_username,
-                    s.title as service_title,
-                    s.id as service_id
+                    s.title as service_title
                 FROM complaints c
-                LEFT JOIN users u1 ON c.complainant_telegram_id = u1.telegram_id
+                LEFT JOIN users u1 ON c.creator_telegram_id = u1.telegram_id
                 LEFT JOIN users u2 ON c.accused_telegram_id = u2.telegram_id
-                LEFT JOIN users u3 ON c.resolved_by_telegram_id = u3.telegram_id
-                LEFT JOIN services s ON c.service_id = s.id
+                LEFT JOIN services s ON c.accused_service_id = s.id
                 WHERE c.id = ?
             """, (complaint_id,))
             
@@ -899,14 +894,9 @@ class Database:
             columns = [description[0] for description in self.cursor.description]
             complaint = dict(zip(columns, row))
             
-            # Преобразуем timestamp в читаемый формат
             if complaint['created_at']:
                 complaint['created_at'] = datetime.strptime(
                     complaint['created_at'], '%Y-%m-%d %H:%M:%S'
-                ).strftime('%d.%m.%Y %H:%M')
-            if complaint['resolved_at']:
-                complaint['resolved_at'] = datetime.strptime(
-                    complaint['resolved_at'], '%Y-%m-%d %H:%M:%S'
                 ).strftime('%d.%m.%Y %H:%M')
                 
             return complaint
@@ -915,20 +905,20 @@ class Database:
             print(f"Ошибка при получении жалобы: {e}")
             return None
 
-    def get_complaints(self, status: Optional[str] = None, 
-                      type: Optional[str] = None,
-                      complainant_telegram_id: Optional[str] = None,
+    def get_complaints(self, type: Optional[str] = None,
+                      complaint_id: Optional[int] = None,
+                      creator_telegram_id: Optional[str] = None,
                       accused_telegram_id: Optional[str] = None,
-                      service_id: Optional[int] = None,
+                      accused_service_id: Optional[int] = None,
                       limit: Optional[int] = None) -> List[Dict]:
         """
         Получает список жалоб с возможностью фильтрации
         Args:
-            status: Статус жалобы ('pending', 'resolved', 'rejected')
             type: Тип жалобы ('user' или 'service')
-            complainant_telegram_id: Telegram ID заявителя
+            complaint_id: ID жалобы
+            creator_telegram_id: Telegram ID создателя
             accused_telegram_id: Telegram ID обвиняемого
-            service_id: ID услуги
+            accused_service_id: ID услуги
             limit: Ограничение количества результатов
         Returns:
             List[Dict]: Список жалоб
@@ -937,35 +927,32 @@ class Database:
             query = """
                 SELECT 
                     c.*,
-                    u1.username as complainant_username,
+                    u1.username as creator_username,
                     u2.username as accused_username,
-                    u3.username as resolved_by_username,
-                    s.title as service_title,
-                    s.id as service_id
+                    s.title as service_title
                 FROM complaints c
-                LEFT JOIN users u1 ON c.complainant_telegram_id = u1.telegram_id
+                LEFT JOIN users u1 ON c.creator_telegram_id = u1.telegram_id
                 LEFT JOIN users u2 ON c.accused_telegram_id = u2.telegram_id
-                LEFT JOIN users u3 ON c.resolved_by_telegram_id = u3.telegram_id
-                LEFT JOIN services s ON c.service_id = s.id
+                LEFT JOIN services s ON c.accused_service_id = s.id
                 WHERE 1=1
             """
             params = []
             
-            if status:
-                query += " AND c.status = ?"
-                params.append(status)
             if type:
                 query += " AND c.type = ?"
-                params.append(type)
-            if complainant_telegram_id:
-                query += " AND c.complainant_telegram_id = ?"
-                params.append(complainant_telegram_id)
+                params.append(type) 
+            if complaint_id:
+                query += " AND c.id = ?"
+                params.append(complaint_id)
+            if creator_telegram_id:
+                query += " AND c.creator_telegram_id = ?"
+                params.append(creator_telegram_id)
             if accused_telegram_id:
                 query += " AND c.accused_telegram_id = ?"
                 params.append(accused_telegram_id)
-            if service_id:
-                query += " AND c.service_id = ?"
-                params.append(service_id)
+            if accused_service_id:
+                query += " AND c.accused_service_id = ?"
+                params.append(accused_service_id)
                 
             query += " ORDER BY c.created_at DESC"
 
@@ -980,14 +967,9 @@ class Database:
             for row in self.cursor.fetchall():
                 complaint = dict(zip(columns, row))
                 
-                # Преобразуем timestamp в читаемый формат
                 if complaint['created_at']:
                     complaint['created_at'] = datetime.strptime(
                         complaint['created_at'], '%Y-%m-%d %H:%M:%S'
-                    ).strftime('%d.%m.%Y %H:%M')
-                if complaint['resolved_at']:
-                    complaint['resolved_at'] = datetime.strptime(
-                        complaint['resolved_at'], '%Y-%m-%d %H:%M:%S'
                     ).strftime('%d.%m.%Y %H:%M')
                     
                 complaints.append(complaint)
@@ -998,53 +980,6 @@ class Database:
             print(f"Ошибка при получении жалоб: {e}")
             return []
 
-    def update_complaint_status(self, complaint_id: int, status: str, 
-                              resolved_by_telegram_id: str, resolution_text: str) -> bool:
-        """
-        Обновляет статус жалобы
-        Args:
-            complaint_id: ID жалобы
-            status: Новый статус ('resolved' или 'rejected')
-            resolved_by_telegram_id: Telegram ID модератора
-            resolution_text: Текст решения
-        Returns:
-            bool: True если обновление успешно, False если произошла ошибка
-        """
-        try:
-            if status not in ['resolved', 'rejected']:
-                raise ValueError("Неверный статус жалобы")
-
-            # Проверяем существование жалобы
-            complaint = self.get_complaint_by_id(complaint_id)
-            if not complaint:
-                raise ValueError("Жалоба не найдена")
-
-            # Проверяем, не обработана ли уже жалоба
-            if complaint['status'] != 'pending':
-                raise ValueError("Жалоба уже обработана")
-
-            self.cursor.execute("""
-                UPDATE complaints 
-                SET status = ?,
-                    resolved_by_telegram_id = ?,
-                    resolution_text = ?,
-                    resolved_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND status = 'pending'
-            """, (status, resolved_by_telegram_id, resolution_text, complaint_id))
-            
-            if self.cursor.rowcount == 0:
-                raise ValueError("Не удалось обновить статус жалобы")
-                
-            self.connection.commit()
-            return True
-            
-        except ValueError as ve:
-            print(f"Ошибка валидации при обновлении статуса жалобы: {ve}")
-            return False
-        except Exception as e:
-            print(f"Ошибка при обновлении статуса жалобы: {e}")
-            return False
-
     def delete_complaint(self, complaint_id: int) -> bool:
         """
         Удаляет жалобу по ID
@@ -1054,82 +989,23 @@ class Database:
             bool: True если удаление успешно, False если произошла ошибка
         """
         try:
-            # Проверяем существование жалобы
-            complaint = self.get_complaint_by_id(complaint_id)
-            if not complaint:
-                raise ValueError("Жалоба не найдена")
-
             self.cursor.execute("DELETE FROM complaints WHERE id = ?", (complaint_id,))
             
             if self.cursor.rowcount == 0:
-                raise ValueError("Не удалось удалить жалобу")
+                raise ValueError("Жалоба не найдена")
                 
             self.connection.commit()
             return True
             
-        except ValueError as ve:
-            print(f"Ошибка валидации при удалении жалобы: {ve}")
-            return False
         except Exception as e:
             print(f"Ошибка при удалении жалобы: {e}")
             return False
 
-    def get_user_complaints_stats(self, telegram_id: str) -> Dict[str, int]:
+    def get_complaints_count(self, type: Optional[str] = None) -> int:
         """
-        Получает статистику жалоб пользователя
+        Получает количество жалоб с указанным типом
         Args:
-            telegram_id: Telegram ID пользователя
-        Returns:
-            Dict со статистикой:
-            {
-                'sent_total': общее количество отправленных жалоб,
-                'received_total': общее количество полученных жалоб,
-                'sent_pending': количество ожидающих рассмотрения отправленных жалоб,
-                'received_pending': количество ожидающих рассмотрения полученных жалоб,
-                'resolved_count': количество разрешенных жалоб,
-                'rejected_count': количество отклоненных жалоб
-            }
-        """
-        try:
-            self.cursor.execute("""
-                SELECT 
-                    (SELECT COUNT(*) FROM complaints WHERE complainant_telegram_id = ?) as sent_total,
-                    (SELECT COUNT(*) FROM complaints WHERE accused_telegram_id = ?) as received_total,
-                    (SELECT COUNT(*) FROM complaints WHERE complainant_telegram_id = ? AND status = 'pending') as sent_pending,
-                    (SELECT COUNT(*) FROM complaints WHERE accused_telegram_id = ? AND status = 'pending') as received_pending,
-                    (SELECT COUNT(*) FROM complaints WHERE (complainant_telegram_id = ? OR accused_telegram_id = ?) AND status = 'resolved') as resolved_count,
-                    (SELECT COUNT(*) FROM complaints WHERE (complainant_telegram_id = ? OR accused_telegram_id = ?) AND status = 'rejected') as rejected_count
-            """, (telegram_id, telegram_id, telegram_id, telegram_id, telegram_id, telegram_id, telegram_id, telegram_id))
-            
-            row = self.cursor.fetchone()
-            if not row:
-                raise ValueError("Не удалось получить статистику")
-                
-            return {
-                'sent_total': row[0],
-                'received_total': row[1], 
-                'sent_pending': row[2],
-                'received_pending': row[3],
-                'resolved_count': row[4],
-                'rejected_count': row[5]
-            }
-            
-        except Exception as e:
-            print(f"Ошибка при получении статистики жалоб: {e}")
-            return {
-                'sent_total': 0,
-                'received_total': 0,
-                'sent_pending': 0,
-                'received_pending': 0,
-                'resolved_count': 0,
-                'rejected_count': 0
-            }
-
-    def get_complaints_count(self, status: Optional[str] = None) -> int:
-        """
-        Получает количество жалоб с указанным статусом
-        Args:
-            status: Статус жалобы ('pending', 'resolved', 'rejected')
+            type: Тип жалобы ('user' или 'service')
         Returns:
             int: Количество жалоб
         """
@@ -1137,11 +1013,11 @@ class Database:
             query = "SELECT COUNT(*) FROM complaints"
             params = []
             
-            if status:
-                if status not in ['pending', 'resolved', 'rejected']:
-                    raise ValueError("Неверный статус жалобы")
-                query += " WHERE status = ?"
-                params.append(status)
+            if type:
+                if type not in ['user', 'service']:
+                    raise ValueError("Неверный тип жалобы")
+                query += " WHERE type = ?"
+                params.append(type)
                 
             self.cursor.execute(query, params)
             result = self.cursor.fetchone()
@@ -1156,27 +1032,97 @@ class Database:
     #region Методы для таблицы banned_users
 
     def ban_user(self, telegram_id: str, ban_date: str, ban_duration_hours: int, 
-                reason: str) -> None:
+                reason: str) -> bool:
+        """
+        Блокирует пользователя в системе
+        Args:
+            telegram_id: Telegram ID пользователя
+            ban_date: Дата блокировки
+            ban_duration_hours: Длительность блокировки в часах
+            reason: Причина блокировки
+        Returns:
+            bool: True если блокировка успешна, False если произошла ошибка
+        """
         try:
+            # Проверяем существование пользователя
+            self.cursor.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (telegram_id,))
+            if not self.cursor.fetchone():
+                raise ValueError("Пользователь не найден")
+
+            # Проверяем, не заблокирован ли уже пользователь
+            self.cursor.execute("SELECT telegram_id FROM banned_users WHERE telegram_id = ?", (telegram_id,))
+            if self.cursor.fetchone():
+                raise ValueError("Пользователь уже заблокирован")
+
             self.cursor.execute("""
                 INSERT INTO banned_users (telegram_id, ban_date, ban_duration_hours, reason)
                 VALUES (?, ?, ?, ?)
             """, (telegram_id, ban_date, ban_duration_hours, reason))
             self.connection.commit()
-        except sqlite3.IntegrityError:
-            print("Пользователь уже заблокирован.")
+            return True
+            
+        except Exception as e:
+            print(f"Ошибка при блокировке пользователя: {e}")
+            return False
 
-    def unban_user(self, telegram_id: str) -> None:
-        self.cursor.execute("DELETE FROM banned_users WHERE telegram_id = ?", (telegram_id,))
-        self.connection.commit()
+    def unban_user(self, telegram_id: str) -> bool:
+        """
+        Разблокирует пользователя
+        Args:
+            telegram_id: Telegram ID пользователя
+        Returns:
+            bool: True если разблокировка успешна, False если произошла ошибка
+        """
+        try:
+            self.cursor.execute("DELETE FROM banned_users WHERE telegram_id = ?", (telegram_id,))
+            if self.cursor.rowcount == 0:
+                raise ValueError("Пользователь не найден в списке заблокированных")
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Ошибка при разблокировке пользователя: {e}")
+            return False
 
-    def get_banned_user(self, telegram_id: str) -> Optional[Tuple]:
-        self.cursor.execute("SELECT * FROM banned_users WHERE telegram_id = ?", (telegram_id,))
-        return self.cursor.fetchone()
+    def get_banned_user(self, telegram_id: str) -> Optional[Dict]:
+        """
+        Получает информацию о блокировке пользователя
+        Args:
+            telegram_id: Telegram ID пользователя
+        Returns:
+            Dict с информацией о блокировке или None если пользователь не заблокирован
+        """
+        try:
+            self.cursor.execute("""
+                SELECT id, telegram_id, ban_date, ban_duration_hours, reason 
+                FROM banned_users 
+                WHERE telegram_id = ?
+            """, (telegram_id,))
+            result = self.cursor.fetchone()
+            if result:
+                return dict(zip(['id', 'telegram_id', 'ban_date', 'ban_duration_hours', 'reason'], result))
+            return None
+        except Exception as e:
+            print(f"Ошибка при получении информации о блокировке: {e}")
+            return None
 
-    def get_banned_users(self) -> List[Tuple]:
-        self.cursor.execute("SELECT * FROM banned_users")
-        return self.cursor.fetchall()
+    def get_banned_users(self) -> List[Dict]:
+        """
+        Получает список всех заблокированных пользователей
+        Returns:
+            List[Dict]: Список словарей с информацией о блокировках
+        """
+        try:
+            self.cursor.execute("""
+                SELECT id, telegram_id, ban_date, ban_duration_hours, reason 
+                FROM banned_users 
+                ORDER BY ban_date DESC
+            """)
+            results = self.cursor.fetchall()
+            return [dict(zip(['id', 'telegram_id', 'ban_date', 'ban_duration_hours', 'reason'], row)) 
+                   for row in results]
+        except Exception as e:
+            print(f"Ошибка при получении списка заблокированных пользователей: {e}")
+            return []
 
     #endregion
 
